@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+import httpx
+from fastmcp import FastMCP
+
+BASE_URL = "http://localhost:8080/ebx-ps-fasttrack/rest"
+app = Server("ebx-agent-mcp-server")
+
+@app.list_tools()
+async def list_tools():
+    return [
+        Tool(name="searchSchema", description="Search EBX schema", 
+             inputSchema={"type": "object", "properties": {"roots": {"type": "string"}, "query": {"type": "string"}}, "required": ["query"]}),
+        Tool(name="executeSql", description="Execute SQL", 
+             inputSchema={"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]}),
+        Tool(name="getTableDefinition", description="Get table fields", 
+             inputSchema={"type": "object", "properties": {"dataspace": {"type": "string"}, "dataset": {"type": "string"}, "path": {"type": "string"}}, "required": ["dataspace", "dataset", "path"]})
+    ]
+
+@app.call_tool()
+async def call_tool(name: str, arguments: Any):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            if name == "searchSchema":
+                params = {k: v for k, v in [("roots", arguments.get("roots")), ("query", arguments.get("query"))] if v}
+                response = await client.get(f"{BASE_URL}/agent/v1/search", params=params)
+                response.raise_for_status()
+                return [TextContent(type="text", text=json.dumps(response.json(), indent=2))]
+            elif name == "executeSql":
+                sql = arguments.get("sql")
+                if not sql:
+                    return [TextContent(type="text", text=json.dumps({"error": "SQL query required"}))]
+                response = await client.post(f"{BASE_URL}/agent/v1/sql", json=sql, headers={"Content-Type": "application/json"})
+                response.raise_for_status()
+                return [TextContent(type="text", text=json.dumps(response.json(), indent=2))]
+            elif name == "getTableDefinition":
+                params = {k: v for k, v in [("dataspace", arguments.get("dataspace")), ("dataset", arguments.get("dataset")), ("path", arguments.get("path"))] if v}
+                response = await client.get(f"{BASE_URL}/agent/v1/fields", params=params)
+                response.raise_for_status()
+                return [TextContent(type="text", text=json.dumps(response.json(), indent=2))]
+            else:
+                return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+        except httpx.HTTPStatusError as e:
+            return [TextContent(type="text", text=json.dumps({"error": f"HTTP error {e.response.status_code}", "details": e.response.text}, indent=2))]
+        except Exception as e:
+            return [TextContent(type="text", text=json.dumps({"error": str(e), "type": type(e).__name__}, indent=2))]
+
+async def main_stdio():
+    async with stdio_server() as (read_stream, write_stream):
+        await app.run(read_stream, write_stream, app.create_initialization_options())
+
+class JsonRpcError:
+    PARSE_ERROR = -32700
+    INVALID_REQUEST = -32600
+    METHOD_NOT_FOUND = -32601
+    INVALID_PARAMS = -32602
+    INTERNAL_ERROR = -32603
+
+async def handle_jsonrpc(request):
+    try:
+        body = await request.json()
+    except:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": JsonRpcError.PARSE_ERROR, "message": "Parse error"}, "id": None}, status_code=400)
+    if not isinstance(body, dict) or body.get("jsonrpc") != "2.0":
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": JsonRpcError.INVALID_REQUEST, "message": "Invalid Request"}, "id": body.get("id")}, status_code=400)
+    method = body.get("method")
+    params = body.get("params", {})
+    request_id = body.get("id")
+    try:
+        if method == "initialize":
+            result = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "ebx-agent-mcp-server", "version": "1.0.0"}}
+        elif method == "tools/list":
+            # Call the decorated function directly
+            tools = await list_tools()
+            result = {"tools": [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in tools]}
+        elif method == "tools/call":
+            tool_name = params.get("name")
+            if not tool_name:
+                return JSONResponse({"jsonrpc": "2.0", "error": {"code": JsonRpcError.INVALID_PARAMS, "message": "Missing tool name"}, "id": request_id}, status_code=400)
+            # Call the decorated function directly
+            content_list = await call_tool(tool_name, params.get("arguments", {}))
+            result = {"content": [{"type": c.type, "text": c.text} for c in content_list]}
+        elif method == "ping":
+            result = {}
+        else:
+            return JSONResponse({"jsonrpc": "2.0", "error": {"code": JsonRpcError.METHOD_NOT_FOUND, "message": f"Method not found: {method}"}, "id": request_id}, status_code=404)
+        return JSONResponse({"jsonrpc": "2.0", "result": result, "id": request_id})
+    except Exception as e:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": JsonRpcError.INTERNAL_ERROR, "message": str(e)}, "id": request_id}, status_code=500)
+
+async def handle_health(request):
+    return JSONResponse({"status": "healthy", "server": "ebx-agent-mcp-server"})
+
+async def handle_root_get(request):
+    """Documentation page for GET requests to root."""
+    return JSONResponse({
+        "server": "EBX Agent MCP Server",
+        "version": "1.0.0",
+        "protocol": "JSON-RPC 2.0",
+        "transport": "HTTP",
+        "endpoints": {
+            "/": {
+                "POST": "JSON-RPC endpoint - send MCP protocol messages",
+                "GET": "This documentation"
+            },
+            "/health": {
+                "GET": "Health check endpoint"
+            }
+        },
+        "methods": [
+            {"name": "initialize", "description": "Initialize MCP session"},
+            {"name": "tools/list", "description": "List available tools"},
+            {"name": "tools/call", "description": "Execute a tool", "params": {"name": "tool name", "arguments": "tool arguments"}},
+            {"name": "ping", "description": "Ping server"}
+        ],
+        "tools": [
+            {"name": "searchSchema", "description": "Search for schema elements in EBX repository"},
+            {"name": "executeSql", "description": "Execute SQL queries against EBX database"},
+            {"name": "getTableDefinition", "description": "Get table field definitions"}
+        ],
+        "example": {
+            "url": "POST /",
+            "headers": {"Content-Type": "application/json"},
+            "body": {"jsonrpc": "2.0", "method": "tools/list", "id": 1}
+        }
+    })
+
+async def handle_root(request):
+    """Route handler that dispatches based on HTTP method."""
+    if request.method == "GET":
+        return await handle_root_get(request)
+    elif request.method == "POST":
+        return await handle_jsonrpc(request)
+    else:
+        return JSONResponse({"error": "Method not allowed"}, status_code=405)
+
+async def handle_sse(request: Request):
+    """Handle SSE connection for MCP protocol."""
+    sse_transport = SseServerTransport("/messages")
+    
+    async def event_stream():
+        async with sse_transport.connect_sse(
+            request.scope,
+            request.receive,
+            request._send
+        ) as (read_stream, write_stream):
+            await app.run(
+                read_stream,
+                write_stream,
+                app.create_initialization_options()
+            )
+    
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+def create_http_app():
+    return Starlette(routes=[
+        Route("/", endpoint=handle_root, methods=["GET", "POST"]),
+        Route("/sse", endpoint=handle_sse, methods=["GET"]),
+        Route("/health", endpoint=handle_health, methods=["GET"])
+    ])
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in ("--http", "http"):
+        import uvicorn
+        port = int(sys.argv[2]) if len(sys.argv) > 2 else 8000
+        print(f"EBX MCP Server (JSON-RPC/HTTP + SSE) on http://localhost:{port}")
+        print(f"JSON-RPC: curl -X POST http://localhost:{port}/ -H \"Content-Type: application/json\" -d '{{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":1}}'")
+        print(f"SSE: curl -N http://localhost:{port}/sse")
+        uvicorn.run(create_http_app(), host="0.0.0.0", port=port)
+    else:
+        asyncio.run(main_stdio())

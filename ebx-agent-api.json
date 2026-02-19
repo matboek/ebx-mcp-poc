@@ -1,0 +1,158 @@
+{
+    "openapi": "3.0.1",
+    "paths": {
+        "/agent/v1/search": {
+            "get": {
+                "operationId": "searchSchema",
+                "parameters": [
+                    {
+                        "in": "query",
+                        "name": "roots",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "style": "form"
+                    },
+                    {
+                        "in": "query",
+                        "name": "query",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "style": "form"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "nullable": true,
+                                    "properties": {},
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "default response"
+                    },
+                    "default": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "nullable": true,
+                                    "properties": {},
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "default response"
+                    }
+                }
+            }
+        },
+        "/agent/v1/sql": {
+            "post": {
+                "operationId": "executeSql",
+                "parameters": [],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "nullable": true,
+                                    "properties": {},
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "default response"
+                    },
+                    "default": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "nullable": true,
+                                    "properties": {},
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "default response"
+                    }
+                }
+            }
+        },
+        "/agent/v1/fields": {
+            "get": {
+                "operationId": "getTableDefinition",
+                "parameters": [
+                    {
+                        "in": "query",
+                        "name": "dataspace",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "style": "form"
+                    },
+                    {
+                        "in": "query",
+                        "name": "dataset",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "style": "form"
+                    },
+                    {
+                        "in": "query",
+                        "name": "path",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "style": "form"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "nullable": true,
+                                    "properties": {},
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "default response"
+                    },
+                    "default": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "nullable": true,
+                                    "properties": {},
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "default response"
+                    }
+                }
+            }
+        }
+    },
+    "servers": [
+        {
+            "url": "http://host.docker.internal:8080/ebx-ps-fasttrack/rest/"
+        }
+    ]
+}

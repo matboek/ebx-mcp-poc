@@ -1,0 +1,10 @@
+INFO:     Started server process [52889]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+EBX MCP Server (JSON-RPC/HTTP) on http://localhost:8000
+Test: curl -X POST http://localhost:8000/ -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+INFO:     127.0.0.1:54920 - "POST / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54939 - "POST / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54941 - "POST / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54943 - "GET / HTTP/1.1" 200 OK
