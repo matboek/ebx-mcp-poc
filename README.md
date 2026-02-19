@@ -1,158 +1,132 @@
 # EBX Agent API MCP Server
 
-This MCP server exposes the EBX Agent API as tools that can be used with Claude Desktop or other MCP clients.
+This MCP server exposes the EBX Agent API as tools that can be used with GitHub Copilot, Claude Desktop, or any other MCP-compatible client. It is built with [FastMCP](https://github.com/jlowin/fastmcp) and served over HTTP via FastAPI + uvicorn.
 
 ## Tools
 
 The server provides three tools:
 
-### 1. searchSchema
-Search for schema elements in the EBX repository.
+### 1. `search_schema`
+Search the EBX schema to discover where data is stored in the repository.
 
 **Parameters:**
-- `roots` (optional): Root path(s) to search within
-- `query` (optional): Search query string
+- `query` (required): Search term to match against table names, labels, and descriptions (case-insensitive)
 
-### 2. executeSql
-Execute SQL queries against the EBX database.
+**Returns:** JSON array of matching table locations, each with `dataspace`, `dataset`, `path`, `label`, and `description`.
 
-**Parameters:**
-- `sql` (required): SQL query to execute
-
-### 3. getTableDefinition
-Get field definitions and structure of a specific table.
+### 2. `execute_sql`
+Execute a SQL SELECT query against the EBX data repository.
 
 **Parameters:**
-- `dataspace` (optional): The dataspace name
-- `dataset` (optional): The dataset name
-- `path` (optional): The table path
+- `sql` (required): SQL SELECT query to execute
+- `dataspace` (required): Dataspace name (from `search_schema` results)
+- `dataset` (required): Dataset name (from `search_schema` results)
+
+**Returns:** JSON with query results including rows and column metadata.
+
+### 3. `get_table_definition`
+Get detailed field information for a specific table in EBX.
+
+**Parameters:**
+- `dataspace` (required): Dataspace name (from `search_schema` results)
+- `dataset` (required): Dataset name (from `search_schema` results)
+- `path` (required): Table path like `/root/Customer` (from `search_schema` results)
+
+**Returns:** JSON array of field definitions with `name`, `label`, `type`, and `fk_target`.
 
 ## Setup
 
 1. Create a virtual environment (recommended):
-```bash
+\`\`\`bash
 python3 -m venv .venv
 source .venv/bin/activate  # On macOS/Linux
 # or
-.venv\Scripts\activate  # On Windows
-```
+.venv\Scripts\activate     # On Windows
+\`\`\`
 
 2. Install dependencies:
-```bash
+\`\`\`bash
 pip install -r requirements.txt
-```
+\`\`\`
 
-3. Ensure the EBX Agent API is running at `http://localhost:8080/ebx-ps-fasttrack/rest/`
+3. Ensure the EBX Agent API is running at `http://localhost:8080/ebx-ps-fasttrack/rest`
 
-## Configuration
+## Running the Server
 
-### Running as HTTP Server (Recommended for Testing)
-
-Run the server with JSON-RPC over HTTP transport:
-```bash
-python server.py --http          # Runs on port 8000
-python server.py --http 3000     # Runs on custom port
-```
-
-This starts an HTTP server with JSON-RPC endpoints:
-- JSON-RPC endpoint: `POST http://localhost:8000/`
-- Health check: `GET http://localhost:8000/health`
-
-**Example requests:**
-```bash
-# List available tools
-curl -X POST http://localhost:8000/ \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
-
-# Call searchSchema tool
-curl -X POST http://localhost:8000/ \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"searchSchema","arguments":{"query":"customer"}},"id":2}'
-
-# Health check
-curl http://localhost:8000/health
-```
-
-### Running as Stdio Server (For Claude Desktop)
-
-Run without arguments for stdio mode:
-```bash
+\`\`\`bash
 python server.py
-```
+\`\`\`
 
-## Integration
+This starts a FastAPI + uvicorn HTTP server on port 8000. The MCP endpoint is mounted at `/mcp`:
 
-### For Claude Desktop (Stdio Mode)
-
-Add to your Claude Desktop config file:
-
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "ebx-agent": {
-      "command": "python",
-      "args": [
-        "/Users/matboek/AI/github-copilot/server.py"
-      ]
-    }
-  }
-}
-```
-
-**Note**: Update the path in `args` to match your actual installation location.
-
-### For MCP Clients via HTTP
-
-Connect to the HTTP server using the JSON-RPC endpoint:
-```
-POST http://localhost:8000/
-```
-
-Send JSON-RPC 2.0 requests with MCP protocol methods:
-- `initialize` - Initialize the server
-- `tools/list` - List available tools
-- `tools/call` - Execute a tool
-- `ping` - Ping the server
-
-### Testing Standalone
-
-**HTTP Mode:**
-```bash
-python server.py --http
-# Server starts on http://localhost:8000
-# Test with MCP Inspector or curl
-```
-
-**Stdio Mode:**
-```bash
-python server.py
-# Server communicates via stdin/stdout (MCP protocol)
-```sed MCP clients.
-
-### Testing Standalone
-
-Run the server directly:
-```bash
-python server.py
-```
-
-The server will communicate over stdio using the MCP protocol.
+- **MCP endpoint**: `http://localhost:8000/mcp`
 
 ## API Configuration
 
-By default, the server connects to:
-- Base URL: `http://localhost:8080/ebx-ps-fasttrack/rest`
+By default the server connects to:
+- **Base URL**: `http://localhost:8080/ebx-ps-fasttrack/rest`
+- **Auth**: Basic auth with `admin` / `admin`
 
-To change this, modify the `BASE_URL` constant in `server.py`.
+To change these, modify the `BASE_URL` and `AUTH` constants at the top of `server.py`.
+
+## Integration
+
+### GitHub Copilot (VS Code)
+
+Add the server to your VS Code MCP configuration (`.vscode/mcp.json` or user settings):
+
+\`\`\`json
+{
+  "servers": {
+    "ebx-agent": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+\`\`\`
+
+### Claude Desktop
+
+Add to your Claude Desktop config file:
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`  
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+\`\`\`json
+{
+  "mcpServers": {
+    "ebx-agent": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+\`\`\`
+
+### Testing with MCP Inspector or curl
+
+\`\`\`bash
+# Initialize session
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
+
+# List available tools
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":2}'
+
+# Call search_schema
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"search_schema","arguments":{"query":"customer"}},"id":3}'
+\`\`\`
 
 ## Example Usage
 
-Once configured in Claude Desktop, you can use natural language to interact with the EBX API:
+Once connected, an AI assistant can use natural language to interact with EBX:
 
-- "Search for schemas containing 'customer'"
-- "Execute this SQL query: SELECT * FROM users LIMIT 10"
-- "Get the table definition for the products table in the main dataspace"
+- "Search for tables related to 'customer'"
+- "Get the field definitions for the Employee table in the HR dataspace"
+- "Execute this SQL: SELECT * FROM \"/root/Customer\" LIMIT 10"
