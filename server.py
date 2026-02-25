@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
+import logging
 from urllib import response
 import httpx
 from fastmcp import FastMCP
 from fastapi import FastAPI
 import uvicorn
+
+logging.basicConfig(level=logging.DEBUG)
 
 # Base URL for the EBX Agent API
 BASE_URL = "http://localhost:8080/ebx-ps-fasttrack/rest"
@@ -12,7 +15,7 @@ BASE_URL = "http://localhost:8080/ebx-ps-fasttrack/rest"
 AUTH = ("admin", "admin")
 
 # Create FastMCP server instance
-mcp = FastMCP("EBX Agent MCP Server", stateless_http=True)
+mcp = FastMCP("EBX Agent MCP Server")
 
 @mcp.tool()
 async def search_schema(query: str) -> str:
@@ -91,12 +94,17 @@ async def execute_sql(sql: str, dataspace: str, dataset: str) -> str:
     - Fields that belong to a complex type (a nested group) are accessed with dot‑notation: table."ComplexField"."SubField".  
       Do not use a single string like table."ComplexField.SubField".  
       Use the get_table_definition tool to discover the exact field path.
+    - When you reference a sub-field of a complex type in a query, you must ALWAYS use the table name or alias as a prefix, 
+      even if the field name is unique across the entire table.
+      For example, if you have a table "Employee" with a complex field "Address" that has a sub-field "Street", you MUST 
+      reference it as Employee."Address"."Street" in your SQL query, even if no other field is named "Street" in the entire table.
     - Absolute paths need quotes: SELECT * FROM \"/root/myTable\"
     - Reserved words need quotes: SELECT t.\"user\", t.\"order\" FROM myTable t
     - Groups with same table names: Use full path like \"my_group/my_table\"
     
     Performance tips:
     - Always use LIMIT to avoid large result sets
+      Ensure you describe any LIMIT size in your response to the user so they understand how many records will be returned
     - Use ORDER BY with LIMIT instead of MIN/MAX aggregates for better performance
     - GROUP BY and most aggregates (except COUNT) are not optimized
     - Avoid RIGHT and FULL joins when possible
@@ -149,6 +157,63 @@ async def execute_sql(sql: str, dataspace: str, dataset: str) -> str:
                 # Fallback if the response isn't valid JSON
                 return f"HTTP Error {response.status_code}: {response.text}" 
             
+        return response.text
+
+@mcp.tool()
+async def find_similar_records(dataspace: str, dataset: str, table_path: str, record_pk: str, k: int = 5) -> str:
+    """Performs a Top-K Vector Similarity Search by comparing a target record's stored vector embedding against all other records in the same EBX table. Returns the most semantically similar records ranked by cosine similarity score.
+
+    IMPORTANT: Only use this tool if you have confirmed that the target table contains a field named "vector_blob". Use the get_table_fields tool first to inspect the table schema before calling this tool. If "vector_blob" is not present in the field list, do NOT call this tool.
+
+    When to use:
+    - The user asks to find records that are "similar to", "like", "related to", or "semantically close to" a specific record
+    - The user wants to perform a semantic or similarity search within a table
+    - The target table has been confirmed to have a "vector_blob" field containing pre-computed vector embeddings
+
+    When NOT to use:
+    - The table does not have a "vector_blob" field
+    - The user is asking for exact matches or filter-based lookups (use the SQL tool instead)
+    - The user is searching across multiple tables
+
+    Args:
+        dataspace: The name of the EBX dataspace containing the table (e.g. "Reference")
+        dataset: The name of the EBX dataset containing the table (e.g. "MIMA")
+        table_path: The absolute schema path to the table (e.g. "/root/Company")
+        record_pk: The primary key of the target record to compare against all others (e.g. "1")
+        k: The number of top similar records to return (default: 5)
+
+    Returns:
+        A JSON array of up to k objects, sorted by descending similarity score. Each object contains:
+        - "pk": the primary key of the similar record (string)
+        - "score": the cosine similarity expressed as a percentage from 0.0 to 100.0, rounded to 2 decimal places (number)
+
+        Example response:
+        [
+          { "pk": "7", "score": 94.12 },
+          { "pk": "3", "score": 88.45 },
+          { "pk": "12", "score": 76.30 }
+        ]
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{BASE_URL}/agent/v1/vector-similarity",
+            json={
+                "dataspace": dataspace,
+                "dataset": dataset,
+                "tablePath": table_path,
+                "recordPk": record_pk,
+                "k": k
+            },
+            auth=AUTH
+        )
+
+        if response.is_error:
+            try:
+                error_data = response.json()
+                return f"EBX Vector Similarity Error: {error_data.get('details', 'Unknown error')}"
+            except Exception:
+                return f"HTTP Error {response.status_code}: {response.text}"
+
         return response.text
 
 @mcp.tool()
@@ -208,7 +273,7 @@ async def get_table_definition(dataspace: str, dataset: str, path: str) -> str:
             
         return response.text
 
-mcp_app = mcp.http_app(path="/mcp")
+mcp_app = mcp.http_app(path="/mcp", stateless_http=True)
 app = FastAPI(lifespan=mcp_app.lifespan)  # Use MCP lifespan for startup/shutdown events
 app.mount("/", mcp_app)  
 
