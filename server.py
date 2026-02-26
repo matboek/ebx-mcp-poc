@@ -5,6 +5,7 @@ import httpx
 from fastmcp import FastMCP
 from fastapi import FastAPI
 import uvicorn
+from typing import Optional, List, Dict
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -56,10 +57,10 @@ async def search_schema(query: str) -> str:
         return response.text
 
 @mcp.tool()
-async def execute_sql(sql: str, dataspace: str, dataset: str) -> str:
+async def execute_sql(sql: str, dataspace: str, dataset: str, additional_datasets: Optional[List[Dict[str, str]]] = None) -> str:
     """Execute a SQL query against the EBX data repository.
     
-    EBX supports standard SQL queries with some extensions. Use this tool to retrieve and analyze data.
+    EBX supports standard Apache Calcite SQL with some extensions. Use this tool to retrieve and analyze data.
     
     Supported SQL syntax:
     - SELECT, FROM, WHERE, GROUP BY, HAVING clauses
@@ -73,6 +74,14 @@ async def execute_sql(sql: str, dataspace: str, dataset: str) -> str:
     - LEFT JOIN (supported)
     - RIGHT JOIN, FULL JOIN (supported but avoid if possible - less optimized)
     
+    CROSS-DATASET QUERIES & ALIASING:
+    - If you need to JOIN a table that is in a different dataset, you MUST inject it using the 'additional_datasets' parameter.
+    - The 'additional_datasets' parameter takes a list of objects: [{"alias": "ref", "dataspace": "RefSpace", "dataset": "RefData"}]
+    - Once injected, you MUST prefix the target table path in your SQL with the alias you provided.
+    - Example CROSS-DATASET JOIN:
+      SQL: SELECT c."Name", d."CountryName" FROM "/root/Companies" c JOIN ref."/root/Countries" d ON c."Address"."CountryID" = d."ID"
+      Params: dataspace="Main", dataset="CompaniesData", additional_datasets=[{"alias": "ref", "dataspace": "Reference", "dataset": "Geography"}]
+
     Data types (XML Schema to SQL mapping):
     - xs:string → VARCHAR, xs:boolean → BOOLEAN
     - xs:int → INT, xs:decimal → DECIMAL
@@ -87,11 +96,15 @@ async def execute_sql(sql: str, dataspace: str, dataset: str) -> str:
     - t.\"ebx-metadata\".\"system\".\"creator\": Record creator
     - t.\"ebx-metadata\".\"system\".\"creation_time\": Creation timestamp
     
+    CRITICAL SQL SYNTAX RULES (EBX Apache Calcite):
+    - You MUST enclose EVERY table path, field name, and complex group step in double quotes to preserve case-sensitivity.
+    - WRONG: SELECT c.Identification.Name FROM /root/Companies c
+    - RIGHT: SELECT c."Identification"."Name" FROM "/root/Companies" c
+
     Table and field naming:
     - When referencing a table in a SQL statement, always use the full absolute path (e.g. "/root/Employee").  
       The path must be quoted and must start with /root/
     - ALWAYS use field names from get_table_definition. Do NOT guess field names.
-    - Fields that belong to a complex type (a nested group) are accessed with dot‑notation: table."ComplexField"."SubField".  
       Do not use a single string like table."ComplexField.SubField".  
       Use the get_table_definition tool to discover the exact field path.
     - When you reference a sub-field of a complex type in a query, you must ALWAYS use the table name or alias as a prefix, 
@@ -114,7 +127,8 @@ async def execute_sql(sql: str, dataspace: str, dataset: str) -> str:
     - Do not use semicolons at the end of queries
 
     Foreign key Dereferencing:
-    - When dereferencing foreign keys, you need to find the fields of the primary key of the target table using getTableDefinition.
+    - Determine foreign key targets using the get_table_definition tool (look at the fk_target attribute).
+    - If the fk_target points to a different dataset, use the Cross-Dataset Aliasing approach above.    - When dereferencing foreign keys, you need to find the fields of the primary key of the target table using getTableDefinition.
     - In your SQL WHERE or JOIN condition, you need to specify the table name that is referenced, then the field of the foreign key 
       Primary key using dot notation.
     - For a target table with a composite primary key, you need to specify all the fields of the primary key in your SQL condition.
@@ -128,37 +142,37 @@ async def execute_sql(sql: str, dataspace: str, dataset: str) -> str:
     - Using $pk: SELECT * FROM tableA JOIN tableB ON FK_AS_STRING(tableA.fkB) = tableB.\"$pk\"
     
     Args:
-        sql: SQL SELECT query to execute (read-only). The table names should be just the name, not the full path. 
-             Use get_table_definition to find correct field names with dot notation for nested fields within complex types.
-        dataspace: The dataspace name where the query will be executed (from search_schema results)
-        dataset: The dataset name where the query will be executed (from search_schema results)
-    
+sql: SQL SELECT query to execute. Remember to double-quote all field paths and table names!
+        dataspace: The primary dataspace name.
+        dataset: The primary dataset name.
+        additional_datasets: Optional list of dictionaries containing 'alias', 'dataspace', and 'dataset' to inject into the query scope for cross-dataset joins.    
     Returns:
         JSON with query results including rows and column metadata
     """
+    payload = {
+        "sql": sql,
+        "dataspace": dataspace,
+        "dataset": dataset
+    }
+    
+    if additional_datasets:
+        payload["additional_datasets"] = additional_datasets
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{BASE_URL}/agent/v1/sql",
-            json={
-                "sql": sql,
-                "dataspace": dataspace,
-                "dataset": dataset
-            },
+            json=payload,
             auth=AUTH
         )
 
-        # Check if the Java API returned an error (400 or 500)
         if response.is_error:
             try:
-                # Try to return the detailed JSON error from your Java API
                 error_data = response.json()
                 return f"EBX SQL Error: {error_data.get('details', 'Unknown error')}"
             except Exception:
-                # Fallback if the response isn't valid JSON
                 return f"HTTP Error {response.status_code}: {response.text}" 
             
         return response.text
-
 @mcp.tool()
 async def find_similar_records(dataspace: str, dataset: str, table_path: str, record_pk: str, k: int = 5) -> str:
     """Performs a Top-K Vector Similarity Search by comparing a target record's stored vector embedding against all other records in the same EBX table. Returns the most semantically similar records ranked by cosine similarity score.
