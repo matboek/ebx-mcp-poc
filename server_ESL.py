@@ -137,22 +137,28 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
         async with httpx.AsyncClient() as client:
             output = []
             
-            # --- PATH 1: FIND ALL DATASPACES (Recursive Tree Traversal) ---
+  # --- PATH 1: FIND ALL DATASPACES (Recursive Tree Traversal) ---
             if not dataspace_name:
                 output.append("### Available Dataspaces (Open & Business Only)")
+                
+                # FIX 1: Explicitly include the root dataspace since we only query its children
+                output.append("- **Reference** | Label: Reference | Description: Root Dataspace")
                 
                 # Initialize queue with the root repository dataspace
                 queue = ["BReference"]
                 
                 while queue:
                     current_ds = queue.pop(0)
+                    # The EBX endpoint for dataspace children
                     current_url = f"{EBX_REST_URL.replace('/script/SqlExecutor/execute', '')}/data/v1/{current_ds}:children?pageSize=100"
                     
                     while current_url:
                         response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
                         
+                        # FIX 2: Never swallow errors silently in AI tools
                         if not response.is_success:
-                            break 
+                            # If the agent sees this, it (and you) will know exactly what URL broke
+                            return f"Repository search failed on {current_ds} (HTTP {response.status_code}): {response.text}"
                             
                         data = response.json()
                         items = data.get("rows", [])
@@ -167,19 +173,22 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
                             if item.get("status") == "closed" or item.get("closed") is True:
                                 continue
                             
-                            doc = item.get("documentation", [{}])[0]
+                            # FIX 3: Safe unboxing to prevent NoneType crashes
+                            docs = item.get("documentation")
+                            doc = docs[0] if docs and len(docs) > 0 else {}
+                            
                             label = doc.get("label", "No label")
                             description = doc.get("description", "No description")
                             
                             output.append(f"- **{actual_name}** | Label: {label} | Description: {description}")
                             
-                            # Only queue active Branches ('B') for further traversal, ignore Versions ('V')
+                            # Only queue active Branches ('B') for further traversal
                             if key.startswith('B'):
                                 queue.append(key)
                                 
                         pagination = data.get("pagination", {})
                         current_url = pagination.get("nextPage") if pagination.get("hasNext") else None
-
+                        
             # --- PATH 2: FIND DATASETS IN A SPECIFIC DATASPACE ---
             else:
                 output.append(f"### Available Datasets in '{dataspace_name}'")
