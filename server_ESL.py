@@ -133,38 +133,50 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
     ALWAYS use this to find the correct names and descriptions before introspecting tables.
     """
     
-    # 1. Use the pageSize=0 parameter to request the maximum server limit (default 10,000)
+    # 1. Start with the maximum allowed page size of 100
     if not dataspace_name:
-        # 2. Query BReference:children to get the true top-level dataspaces
-        url = f"{EBX_HOST}/ebx-dataservices/rest/data/v1/BReference:children?pageSize=0"
+        url = f"{EBX_HOST}/ebx-dataservices/rest/data/v1/BReference:children?pageSize=100"
     else:
-        # Query the specific dataspace to list its datasets
         branch_name = f"B{dataspace_name}" if not dataspace_name.startswith("B") else dataspace_name
-        url = f"{EBX_HOST}/ebx-dataservices/rest/data/v1/{branch_name}?pageSize=0"
+        url = f"{EBX_HOST}/ebx-dataservices/rest/data/v1/{branch_name}?pageSize=100"
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                url,
-                auth=(EBX_USER, EBX_PASS),
-                timeout=30.0
-            )
+            all_items = []
+            current_url = url
             
-            if not response.is_success:
-                return f"Repository search failed (HTTP {response.status_code}): {response.text}"
+            # 2. Loop to automatically fetch all pages
+            while current_url:
+                response = await client.get(
+                    current_url,
+                    auth=(EBX_USER, EBX_PASS),
+                    timeout=30.0
+                )
                 
-            data = response.json()
+                if not response.is_success:
+                    return f"Repository search failed (HTTP {response.status_code}): {response.text}"
+                    
+                data = response.json()
+                
+                # Aggregate the rows from this page
+                items = data.get("rows", [])
+                all_items.extend(items)
+                
+                # 3. Check if EBX provided a 'nextPage' link in the pagination object
+                pagination = data.get("pagination", {})
+                if pagination.get("hasNext"):
+                    current_url = pagination.get("nextPage")
+                else:
+                    current_url = None # Break the loop
+            
+            # 4. Process the aggregated list
             output = []
-            
-            # The built-in API returns a 'rows' array for both dataspaces and datasets
-            items = data.get("rows", [])
-            
             if not dataspace_name:
                 output.append("### Available Dataspaces (Open & Business Only)")
             else:
                 output.append(f"### Available Datasets in '{dataspace_name}'")
                 
-            for item in items:
+            for item in all_items:
                 key = item.get("key", "Unknown")
                 
                 # Apply filters ONLY when listing Dataspaces
@@ -194,7 +206,7 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
             return "\n".join(output)
             
     except Exception as e:
-        return f"Network error during repository search: {str(e)}"
+        return f"Network error during repository search: {str(e)}""
 
 # 4. Run the server
 if __name__ == "__main__":
