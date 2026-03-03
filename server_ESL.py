@@ -124,6 +124,8 @@ async def introspect_ebx_schema(dataspace: str, dataset: str, table_path: str = 
     except Exception as e:
         return f"Network error during introspection: {str(e)}"
 
+import httpx
+
 @mcp.tool()
 async def search_ebx_repository(dataspace_name: str = None) -> str:
     """
@@ -132,40 +134,42 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
     - If dataspace_name is provided, returns a list of all Datasets inside that specific Dataspace.
     ALWAYS use this to find the correct names and descriptions before introspecting tables.
     """
-    
     try:
         async with httpx.AsyncClient() as client:
             output = []
             
-  # --- PATH 1: FIND ALL DATASPACES (Recursive Tree Traversal) ---
+            # --- FIX 1: Bulletproof URL Parsing ---
+            # Splits at '/rest' and reconstructs to guarantee 'http://.../ebx-dataservices/rest'
+            base_url = EBX_REST_URL.split('/rest')[0] + '/rest'
+            
+            # --- PATH 1: FIND ALL DATASPACES (Recursive Tree Traversal) ---
             if not dataspace_name:
                 output.append("### Available Dataspaces (Open & Business Only)")
                 
-                # FIX 1: Explicitly include the root dataspace since we only query its children
-                output.append("- **Reference** | Label: Reference | Description: Root Dataspace")
-                
-                # Initialize queue with the root repository dataspace
-                queue = ["BReference"]
+                # Start at the root endpoint to dynamically get Reference and any other top-level dataspaces
+                queue = [f"{base_url}/data/v1?pageSize=100"]
                 
                 while queue:
-                    current_ds = queue.pop(0)
-                    # The EBX endpoint for dataspace children
-                    current_url = f"{EBX_REST_URL.replace('/script/SqlExecutor/execute', '')}/data/v1/{current_ds}:children?pageSize=100"
+                    current_url = queue.pop(0)
                     
                     while current_url:
                         response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
                         
-                        # FIX 2: Never swallow errors silently in AI tools
+                        # Never swallow errors silently
                         if not response.is_success:
-                            # If the agent sees this, it (and you) will know exactly what URL broke
-                            return f"Repository search failed on {current_ds} (HTTP {response.status_code}): {response.text}"
+                            return f"Repository search failed on {current_url} (HTTP {response.status_code}): {response.text}"
                             
                         data = response.json()
                         items = data.get("rows", [])
                         
                         for item in items:
                             key = item.get("key", "Unknown")
-                            actual_name = key[1:] if key.startswith(('B', 'V')) else key
+                            
+                            # Only process active Branches ('B'), ignore Versions ('V')
+                            if not key.startswith('B'):
+                                continue
+                                
+                            actual_name = key[1:]
                             
                             # --- Strict Filtering ---
                             if actual_name.lower().startswith("ebx-") or item.get("isTechnical") is True:
@@ -173,41 +177,44 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
                             if item.get("status") == "closed" or item.get("closed") is True:
                                 continue
                             
-                            # FIX 3: Safe unboxing to prevent NoneType crashes
-                            docs = item.get("documentation")
-                            doc = docs[0] if docs and len(docs) > 0 else {}
-                            
-                            label = doc.get("label", "No label")
-                            description = doc.get("description", "No description")
+                            # FIX 2: Dataspace JSON has label/description at the root (based on your payload)
+                            label = item.get("label") or "No label"
+                            description = item.get("description") or "No description"
                             
                             output.append(f"- **{actual_name}** | Label: {label} | Description: {description}")
                             
-                            # Only queue active Branches ('B') for further traversal
-                            if key.startswith('B'):
-                                queue.append(key)
+                            # Dynamically queue the children endpoint if this dataspace has children
+                            if item.get("hasChildren") is True:
+                                children_url = item.get("children")
+                                if children_url:
+                                    queue.append(f"{children_url}?pageSize=100")
                                 
                         pagination = data.get("pagination", {})
                         current_url = pagination.get("nextPage") if pagination.get("hasNext") else None
-                        
+
             # --- PATH 2: FIND DATASETS IN A SPECIFIC DATASPACE ---
             else:
                 output.append(f"### Available Datasets in '{dataspace_name}'")
                 branch_name = f"B{dataspace_name}" if not dataspace_name.startswith("B") else dataspace_name
-                current_url = f"{EBX_REST_URL.replace('/script/SqlExecutor/execute', '')}/data/v1/{branch_name}?pageSize=100"
+                current_url = f"{base_url}/data/v1/{branch_name}?pageSize=100"
                 
                 while current_url:
                     response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
                     if not response.is_success:
-                        return f"Repository search failed (HTTP {response.status_code}): {response.text}"
+                        return f"Failed to list datasets in {dataspace_name} (HTTP {response.status_code}): {response.text}"
                         
                     data = response.json()
                     items = data.get("rows", [])
                     
                     for item in items:
                         key = item.get("key", "Unknown")
-                        doc = item.get("documentation", [{}])[0]
-                        label = doc.get("label", "No label")
-                        description = doc.get("description", "No description")
+                        
+                        # Dataset JSON puts label/description inside the documentation array
+                        docs = item.get("documentation")
+                        doc = docs[0] if docs and len(docs) > 0 else {}
+                        
+                        label = doc.get("label") or "No label"
+                        description = doc.get("description") or "No description"
                         
                         output.append(f"- **{key}** | Label: {label} | Description: {description}")
                         
@@ -221,7 +228,7 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
             
     except Exception as e:
         return f"Network error during repository search: {str(e)}"
-
+        
 # 4. Run the server
 if __name__ == "__main__":
     mcp.run()
