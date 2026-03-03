@@ -128,85 +128,90 @@ async def introspect_ebx_schema(dataspace: str, dataset: str, table_path: str = 
 async def search_ebx_repository(dataspace_name: str = None) -> str:
     """
     Searches the EBX repository to discover available data.
-    - If dataspace_name is omitted, returns a list of all OPEN, non-technical Dataspaces.
-    - If dataspace_name is provided, returns a list of all Datasets inside that Dataspace.
+    - If dataspace_name is omitted, traverses the entire tree and returns all OPEN, non-technical Dataspaces.
+    - If dataspace_name is provided, returns a list of all Datasets inside that specific Dataspace.
     ALWAYS use this to find the correct names and descriptions before introspecting tables.
     """
     
-    # 1. Start with the maximum allowed page size of 100
-    if not dataspace_name:
-        url = f"{EBX_HOST}/ebx-dataservices/rest/data/v1/BReference:children?pageSize=100"
-    else:
-        branch_name = f"B{dataspace_name}" if not dataspace_name.startswith("B") else dataspace_name
-        url = f"{EBX_HOST}/ebx-dataservices/rest/data/v1/{branch_name}?pageSize=100"
-
     try:
         async with httpx.AsyncClient() as client:
-            all_items = []
-            current_url = url
-            
-            # 2. Loop to automatically fetch all pages
-            while current_url:
-                response = await client.get(
-                    current_url,
-                    auth=(EBX_USER, EBX_PASS),
-                    timeout=30.0
-                )
-                
-                if not response.is_success:
-                    return f"Repository search failed (HTTP {response.status_code}): {response.text}"
-                    
-                data = response.json()
-                
-                # Aggregate the rows from this page
-                items = data.get("rows", [])
-                all_items.extend(items)
-                
-                # 3. Check if EBX provided a 'nextPage' link in the pagination object
-                pagination = data.get("pagination", {})
-                if pagination.get("hasNext"):
-                    current_url = pagination.get("nextPage")
-                else:
-                    current_url = None # Break the loop
-            
-            # 4. Process the aggregated list
             output = []
+            
+            # --- PATH 1: FIND ALL DATASPACES (Recursive Tree Traversal) ---
             if not dataspace_name:
                 output.append("### Available Dataspaces (Open & Business Only)")
+                
+                # Initialize queue with the root repository dataspace
+                queue = ["BReference"]
+                
+                while queue:
+                    current_ds = queue.pop(0)
+                    current_url = f"{EBX_REST_URL.replace('/script/SqlExecutor/execute', '')}/data/v1/{current_ds}:children?pageSize=100"
+                    
+                    while current_url:
+                        response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
+                        
+                        if not response.is_success:
+                            break 
+                            
+                        data = response.json()
+                        items = data.get("rows", [])
+                        
+                        for item in items:
+                            key = item.get("key", "Unknown")
+                            actual_name = key[1:] if key.startswith(('B', 'V')) else key
+                            
+                            # --- Strict Filtering ---
+                            if actual_name.lower().startswith("ebx-") or item.get("isTechnical") is True:
+                                continue
+                            if item.get("status") == "closed" or item.get("closed") is True:
+                                continue
+                            
+                            doc = item.get("documentation", [{}])[0]
+                            label = doc.get("label", "No label")
+                            description = doc.get("description", "No description")
+                            
+                            output.append(f"- **{actual_name}** | Label: {label} | Description: {description}")
+                            
+                            # Only queue active Branches ('B') for further traversal, ignore Versions ('V')
+                            if key.startswith('B'):
+                                queue.append(key)
+                                
+                        pagination = data.get("pagination", {})
+                        current_url = pagination.get("nextPage") if pagination.get("hasNext") else None
+
+            # --- PATH 2: FIND DATASETS IN A SPECIFIC DATASPACE ---
             else:
                 output.append(f"### Available Datasets in '{dataspace_name}'")
+                branch_name = f"B{dataspace_name}" if not dataspace_name.startswith("B") else dataspace_name
+                current_url = f"{EBX_REST_URL.replace('/script/SqlExecutor/execute', '')}/data/v1/{branch_name}?pageSize=100"
                 
-            for item in all_items:
-                key = item.get("key", "Unknown")
-                
-                # Apply filters ONLY when listing Dataspaces
-                if not dataspace_name:
-                    actual_name = key[1:] if key.startswith(('B', 'V')) else key
+                while current_url:
+                    response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
+                    if not response.is_success:
+                        return f"Repository search failed (HTTP {response.status_code}): {response.text}"
+                        
+                    data = response.json()
+                    items = data.get("rows", [])
                     
-                    if actual_name.lower().startswith("ebx-") or item.get("isTechnical") is True:
-                        continue
+                    for item in items:
+                        key = item.get("key", "Unknown")
+                        doc = item.get("documentation", [{}])[0]
+                        label = doc.get("label", "No label")
+                        description = doc.get("description", "No description")
                         
-                    if item.get("status") == "closed" or item.get("closed") is True:
-                        continue
+                        output.append(f"- **{key}** | Label: {label} | Description: {description}")
                         
-                    display_name = actual_name
-                else:
-                    display_name = key
-                
-                # Extract localized labels and descriptions
-                doc = item.get("documentation", [{}])[0]
-                label = doc.get("label", "No label")
-                description = doc.get("description", "No description")
-                
-                output.append(f"- **{display_name}** | Label: {label} | Description: {description}")
-                
+                    pagination = data.get("pagination", {})
+                    current_url = pagination.get("nextPage") if pagination.get("hasNext") else None
+
             if len(output) == 1: 
                 return "No open, non-technical results found."
                 
             return "\n".join(output)
             
     except Exception as e:
-        return f"Network error during repository search: {str(e)}""
+        return f"Network error during repository search: {str(e)}"
 
 # 4. Run the server
 if __name__ == "__main__":
