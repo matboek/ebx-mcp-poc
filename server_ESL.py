@@ -6,9 +6,10 @@ import json
 mcp = FastMCP("EBX_SQL_Gateway")
 
 # 2. Configuration (Replace with your actual EBX details)
-EBX_REST_URL = "http://YOUR_EBX_HOST:PORT/ebx-dataservices/rest/YOUR_MODULE/YOUR_SERVICE_PATH/executeSql"
-EBX_USER = "your_username"
-EBX_PASS = "your_password"
+EBX_HOST = "http://localhost:8081"
+EBX_REST_URL = EBX_HOST + "/ebx-dataservices/script/SqlExecutor/execute"
+EBX_USER = "admin"
+EBX_PASS = "admin"
 
 # 3. Define the Tool using the @mcp.tool() decorator
 @mcp.tool()
@@ -53,6 +54,147 @@ async def execute_ebx_sql(sql: str, dataspace: str, dataset: str, expected_colum
             
     except Exception as e:
         return f"Network or connection error communicating with EBX: {str(e)}"
+
+@mcp.tool()
+async def introspect_ebx_schema(dataspace: str, dataset: str, table_path: str = None) -> str:
+    """
+    Introspects the TIBCO EBX data model to retrieve the schema (tables, columns, and types).
+    ALWAYS run this before executing SQL to understand the exact column names and foreign keys.
+    
+    Args:
+        dataspace: The exact EBX dataspace name (e.g., 'BtoCCustomers').
+        dataset: The exact EBX dataset name (e.g., 'BtoCCustomers').
+        table_path: (Optional) A specific table to inspect (e.g., 'Person'). If omitted, returns all tables.
+    """
+    # EBX built-in REST URLs require dataspaces to be prefixed with 'B' (Branch)
+    branch_name = f"B{dataspace}"
+    
+    # Construct the built-in EBX OpenAPI endpoint
+    # Format: /rest/{category}/{categoryVersion}/{specificPath}
+    openapi_url = f"{EBX_HOST}/ebx-dataservices/rest/open-api/v1/data/{branch_name}/{dataset}"
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                openapi_url,
+                auth=(EBX_USER, EBX_PASS),
+                timeout=30.0
+            )
+            
+            if not response.is_success:
+                return f"Schema introspection failed (HTTP {response.status_code}): {response.text}"
+                
+            openapi_spec = response.json()
+            
+            # Extract just the schema definitions from the massive OpenAPI spec
+            schemas = openapi_spec.get("components", {}).get("schemas", {})
+            
+            output = []
+            for schema_name, schema_details in schemas.items():
+                # Filter out REST-specific metadata wrappers (like sort arrays or pagination)
+                if "Request" in schema_name or "Response" in schema_name:
+                    continue
+                    
+                # If the AI asked for a specific table, filter for it
+                if table_path and table_path.lower() not in schema_name.lower():
+                    continue
+                    
+                properties = schema_details.get("properties", {})
+                if not properties:
+                    continue
+                    
+                output.append(f"### Table: {schema_name}")
+                for col_name, col_info in properties.items():
+                    col_type = col_info.get("type", "complex")
+                    
+                    # Detect EBX Foreign Keys by looking for OpenAPI $ref or tableRef metadata
+                    if "$ref" in col_info or col_type == "complex":
+                        col_type = "Foreign Key (MUST use FK_AS_STRING in SQL)"
+                    elif col_type == "array":
+                        col_type = "List/Array"
+                        
+                    output.append(f"- **{col_name}** ({col_type})")
+                output.append("")
+                
+            if not output:
+                return f"No tables found matching '{table_path}' in dataset '{dataset}'."
+                
+            return "\n".join(output)
+            
+    except Exception as e:
+        return f"Network error during introspection: {str(e)}"
+
+@mcp.tool()
+async def search_ebx_repository(dataspace_name: str = None) -> str:
+    """
+    Searches the EBX repository to discover available data.
+    - If dataspace_name is omitted, returns a list of all OPEN, non-technical Dataspaces.
+    - If dataspace_name is provided, returns a list of all Datasets inside that Dataspace.
+    ALWAYS use this to find the correct names and descriptions before introspecting tables.
+    """
+    
+    # 1. Use the pageSize=0 parameter to request the maximum server limit (default 10,000)
+    if not dataspace_name:
+        # 2. Query BReference:children to get the true top-level dataspaces
+        url = f"{EBX_HOST}/ebx-dataservices/rest/data/v1/BReference:children?pageSize=0"
+    else:
+        # Query the specific dataspace to list its datasets
+        branch_name = f"B{dataspace_name}" if not dataspace_name.startswith("B") else dataspace_name
+        url = f"{EBX_HOST}/ebx-dataservices/rest/data/v1/{branch_name}?pageSize=0"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                auth=(EBX_USER, EBX_PASS),
+                timeout=30.0
+            )
+            
+            if not response.is_success:
+                return f"Repository search failed (HTTP {response.status_code}): {response.text}"
+                
+            data = response.json()
+            output = []
+            
+            # The built-in API returns a 'rows' array for both dataspaces and datasets
+            items = data.get("rows", [])
+            
+            if not dataspace_name:
+                output.append("### Available Dataspaces (Open & Business Only)")
+            else:
+                output.append(f"### Available Datasets in '{dataspace_name}'")
+                
+            for item in items:
+                key = item.get("key", "Unknown")
+                
+                # Apply filters ONLY when listing Dataspaces
+                if not dataspace_name:
+                    actual_name = key[1:] if key.startswith(('B', 'V')) else key
+                    
+                    if actual_name.lower().startswith("ebx-") or item.get("isTechnical") is True:
+                        continue
+                        
+                    if item.get("status") == "closed" or item.get("closed") is True:
+                        continue
+                        
+                    display_name = actual_name
+                else:
+                    display_name = key
+                
+                # Extract localized labels and descriptions
+                doc = item.get("documentation", [{}])[0]
+                label = doc.get("label", "No label")
+                description = doc.get("description", "No description")
+                
+                output.append(f"- **{display_name}** | Label: {label} | Description: {description}")
+                
+            if len(output) == 1: 
+                return "No open, non-technical results found."
+                
+            return "\n".join(output)
+            
+    except Exception as e:
+        return f"Network error during repository search: {str(e)}"
 
 # 4. Run the server
 if __name__ == "__main__":
