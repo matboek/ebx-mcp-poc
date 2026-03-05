@@ -147,8 +147,6 @@ async def introspect_ebx_schema(dataspace: str, dataset: str, table_path: str = 
     except Exception as e:
         return f"Network error during introspection: {str(e)}"
 
-import httpx
-
 @mcp.tool()
 async def search_ebx_repository(dataspace_name: str = None) -> str:
     """
@@ -252,17 +250,20 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
     except Exception as e:
         return f"Network error during repository search: {str(e)}"
 
-import httpx
-
 @mcp.tool()
 async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
     """
-    Get the exact table definition and columns required to write a SQL query.
-    Requires the dataspace, dataset, and table_path found via the search tool.
+    STEP 3 OF DATA DISCOVERY.
+    Get the exact table definition, column names, and data types required to write a SQL query.
+    Requires the dataspace, dataset, and table_path found via the previous tools.
+    
+    PAY CLOSE ATTENTION TO THE RETURNED TYPES: 
+    If a field is not a 'string', you must remember to CAST it to VARCHAR in your SQL query.
+    If a field is a Foreign Key, you must use FK_AS_STRING().
     """
     try:
         async with httpx.AsyncClient() as client:
-            # Isolate the base REST URL
+            # Isolate the base REST URL to ensure it points to the native data services
             base_url = EBX_ESL_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
             
             # Ensure branch prefix is present
@@ -285,30 +286,59 @@ async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
             meta_fields = data.get("meta", {}).get("fields", [])
             
             if not meta_fields:
-                return f"Table found, but no metadata fields were returned. Ensure the table path '{table_path}' is correct."
+                return f"Table found, but no metadata fields were returned. Ensure path '{table_path}' is correct."
 
             # Format the output specifically for the AI's context window
             output = [f"### Schema Definition for `{table_path}`"]
-            output.append("| Column Name | Type | Label | Required |")
+            output.append("| Column Name (Use exactly as written) | Type | Label | Required |")
             output.append("| :--- | :--- | :--- | :--- |")
             
-            for field in meta_fields:
-                name = field.get("name", "Unknown")
-                field_type = field.get("type", "string")
-                label = field.get("label", "No label")
-                
-                # Check cardinality to tell the AI if the field is mandatory
-                min_occurs = field.get("minOccurs", 0)
-                is_required = "Yes" if min_occurs > 0 else "No"
-                
-                output.append(f"| `{name}` | {field_type} | {label} | {is_required} |")
+            # Recursive function to flatten EBX groups into Calcite dot notation
+            def flatten_schema(fields_array, prefix=""):
+                for field in fields_array:
+                    name = field.get("name", "Unknown")
+                    full_name = f"{prefix}{name}"
+                    
+                    field_type = field.get("type", "string")
+                    label = field.get("label", "No label")
+                    min_occurs = field.get("minOccurs", 0)
+                    max_occurs = field.get("maxOccurs", 1)
+                    is_required = "Yes" if min_occurs > 0 else "No"
+                    
+                    # --- Foreign Key Detection ---
+                    table_ref = field.get("tableRef")
+                    if table_ref:
+                        target_path = table_ref.get("tablePath", "Unknown Table")
+                        field_type = f"Foreign Key -> `{target_path}`"
+                        
+                    # --- Association Detection ---
+                    elif field.get("association") or field.get("isAssociation") or field_type == "association":
+                        field_type = "Association (Virtual Link - DO NOT query directly)"
+                        
+                    # --- List/Array Detection ---
+                    is_list = max_occurs == "unbounded" or (isinstance(max_occurs, int) and max_occurs > 1)
+                    if is_list and field_type != "group":
+                        # If it's already tagged as an FK, just append the list warning
+                        if "Foreign Key" in field_type:
+                            field_type += " (List/Array)"
+                        else:
+                            field_type = f"{field_type} (List/Array)"
+
+                    # If it's a group, do NOT print it. Instead, recurse into its children.
+                    if field_type == "group" and "fields" in field:
+                        # Pass the current full_name plus a dot to the next level
+                        flatten_schema(field.get("fields"), f"{full_name}.")
+                    else:
+                        # It is a queryable leaf node, add it to the markdown table
+                        output.append(f"| `{full_name}` | {field_type} | {label} | {is_required} |")
+
+            # Start the recursive flattening
+            flatten_schema(meta_fields)
 
             return "\n".join(output)
 
     except Exception as e:
         return f"Network error during table introspection: {str(e)}"
-
-import httpx
 
 @mcp.tool()
 async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
