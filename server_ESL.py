@@ -263,7 +263,7 @@ async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
             # Isolate the base REST URL
-            base_url = EBX_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
+            base_url = EBX_ESL_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
             
             # Ensure branch prefix is present
             branch_name = f"B{dataspace}" if not dataspace.startswith("B") else dataspace
@@ -272,7 +272,7 @@ async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
             clean_path = table_path[1:] if table_path.startswith('/') else table_path
             
             # Build the URL: Request exactly 1 row, but ask for the full metamodel
-            current_url = f"{base_url}/data/v1/{branch_name}/{dataset}/{clean_path}?includeMetamodel=true&pageSize=1"
+            current_url = f"{base_url}/data/v1/{branch_name}/{dataset}/{clean_path}?includeMetamodel=true"
             
             response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
             
@@ -317,7 +317,7 @@ async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
     """
     try:
         async with httpx.AsyncClient() as client:
-            base_url = EBX_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
+            base_url = EBX_ESL_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
             branch_name = f"B{dataspace}" if not dataspace.startswith("B") else dataspace
             
             output = [f"### Tables found in Dataset `{dataset}`"]
@@ -333,7 +333,7 @@ async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
                 
                 # Fetch the current node's metamodel
                 # Note: We use pageSize=1 because we only care about the schema (meta block), not the data rows
-                node_url = f"{base_url}/data/v1/{branch_name}/{dataset}{current_path}?includeMetamodel=true&pageSize=1"
+                node_url = f"{base_url}/data/v1/{branch_name}/{dataset}{current_path}?includeMetamodel=true"
                 
                 response = await client.get(node_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
                 
