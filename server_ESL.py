@@ -16,24 +16,25 @@ EBX_PASS = "admin"
 async def search_ebx_repository(dataspace_name: str = None) -> str:
     """
     Searches the EBX repository to discover available dataspaces and datasets.
-    - If dataspace_name is omitted, returns all OPEN, non-technical Dataspaces.
-    - If dataspace_name is provided, returns a list of all Datasets inside that specific Dataspace.
+    - If dataspace_name is omitted, recursively traverses and returns all OPEN Dataspaces.
+    - If dataspace_name is provided, recursively traverses and returns all Datasets inside it.
     NEVER guess dataspace or dataset names. Always use this tool first to find them.
     """
     try:
         async with httpx.AsyncClient() as client:
             output = []
-            
-            # Bulletproof URL Parsing
             base_url = EBX_DATASERVICES_REST_URL.split('/rest')[0] + '/rest'
             
-            # --- PATH 1: FIND ALL DATASPACES ---
+            # --- PATH 1: FIND ALL DATASPACES (Recursive Tree Traversal) ---
             if not dataspace_name:
                 output.append("### Available Dataspaces (Open & Business Only)")
+                
+                # Start at the root dataspaces endpoint
                 queue = [f"{base_url}/data/v1?pageSize=100"]
                 
                 while queue:
                     current_url = queue.pop(0)
+                    
                     while current_url:
                         response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
                         
@@ -46,11 +47,13 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
                         for item in items:
                             key = item.get("key", "Unknown")
                             
+                            # Only process active Branches ('B')
                             if not key.startswith('B'):
                                 continue
                                 
                             actual_name = key[1:]
                             
+                            # Strict filtering for system and closed dataspaces
                             if actual_name.lower().startswith("ebx-") or item.get("isTechnical") is True:
                                 continue
                             if item.get("status") == "closed" or item.get("closed") is True:
@@ -61,40 +64,56 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
                             
                             output.append(f"- **{actual_name}** | Label: {label} | Description: {description}")
                             
+                            # RECURSION: If this dataspace has children, queue them up
                             if item.get("hasChildren") is True:
                                 children_url = item.get("children")
                                 if children_url:
-                                    queue.append(f"{children_url}?pageSize=100")
+                                    sep = "&" if "?" in children_url else "?"
+                                    queue.append(f"{children_url}{sep}pageSize=100")
                                 
                         pagination = data.get("pagination", {})
                         current_url = pagination.get("nextPage") if pagination.get("hasNext") else None
 
-            # --- PATH 2: FIND DATASETS IN A SPECIFIC DATASPACE ---
+            # --- PATH 2: FIND DATASETS IN A SPECIFIC DATASPACE (Recursive Tree Traversal) ---
             else:
                 output.append(f"### Available Datasets in '{dataspace_name}'")
                 branch_name = f"B{dataspace_name}" if not dataspace_name.startswith("B") else dataspace_name
-                current_url = f"{base_url}/data/v1/{branch_name}?pageSize=100"
                 
-                while current_url:
-                    response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
-                    if not response.is_success:
-                        return f"Failed to list datasets in {dataspace_name} (HTTP {response.status_code}): {response.text}"
-                        
-                    data = response.json()
-                    items = data.get("rows", [])
+                # Start at the root datasets endpoint for this branch
+                queue = [f"{base_url}/data/v1/{branch_name}?pageSize=100"]
+                
+                while queue:
+                    current_url = queue.pop(0)
                     
-                    for item in items:
-                        key = item.get("key", "Unknown")
-                        docs = item.get("documentation")
-                        doc = docs[0] if docs and len(docs) > 0 else {}
+                    while current_url:
+                        response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
+                        if not response.is_success:
+                            return f"Failed to list datasets in {dataspace_name} (HTTP {response.status_code}): {response.text}"
+                            
+                        data = response.json()
+                        items = data.get("rows", [])
                         
-                        label = doc.get("label") or "No label"
-                        description = doc.get("description") or "No description"
-                        
-                        output.append(f"- **{key}** | Label: {label} | Description: {description}")
-                        
-                    pagination = data.get("pagination", {})
-                    current_url = pagination.get("nextPage") if pagination.get("hasNext") else None
+                        for item in items:
+                            key = item.get("key", "Unknown")
+                            
+                            # Dataset JSON puts label/description inside the documentation array
+                            docs = item.get("documentation")
+                            doc = docs[0] if docs and len(docs) > 0 else {}
+                            
+                            label = doc.get("label") or "No label"
+                            description = doc.get("description") or "No description"
+                            
+                            output.append(f"- **{key}** | Label: {label} | Description: {description}")
+                            
+                            # RECURSION: If this dataset has inherited children, queue them up
+                            if item.get("hasChildren") is True:
+                                children_url = item.get("children")
+                                if children_url:
+                                    sep = "&" if "?" in children_url else "?"
+                                    queue.append(f"{children_url}{sep}pageSize=100")
+                                    
+                        pagination = data.get("pagination", {})
+                        current_url = pagination.get("nextPage") if pagination.get("hasNext") else None
 
             if len(output) == 1: 
                 return "No open, non-technical results found."
