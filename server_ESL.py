@@ -77,7 +77,7 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
             # --- PATH 2: FIND DATASETS IN A SPECIFIC DATASPACE (Recursive Tree Traversal) ---
             else:
                 output.append(f"### Available Datasets in '{dataspace_name}'")
-                branch_name = f"B{dataspace_name}" if not dataspace_name.startswith("B") else dataspace_name
+                branch_name = f"B{dataspace_name}"
                 
                 # Start at the root datasets endpoint for this branch
                 queue = [f"{base_url}/data/v1/{branch_name}?pageSize=100"]
@@ -133,7 +133,7 @@ async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
             base_url = EBX_ESL_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
-            branch_name = f"B{dataspace}" if not dataspace.startswith("B") else dataspace
+            branch_name = f"B{dataspace}"
             
             root_url = f"{base_url}/data/v1/{branch_name}/{dataset}?includeMetamodel=true"
             
@@ -190,7 +190,7 @@ async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
             base_url = EBX_ESL_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
-            branch_name = f"B{dataspace}" if not dataspace.startswith("B") else dataspace
+            branch_name = f"B{dataspace}"
             clean_path = table_path[1:] if table_path.startswith('/') else table_path
             
             current_url = f"{base_url}/data/v1/{branch_name}/{dataset}/{clean_path}?includeMetamodel=true"
