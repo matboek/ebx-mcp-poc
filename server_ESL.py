@@ -308,6 +308,8 @@ async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
     except Exception as e:
         return f"Network error during table introspection: {str(e)}"
 
+import httpx
+
 @mcp.tool()
 async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
     """
@@ -317,57 +319,58 @@ async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
     """
     try:
         async with httpx.AsyncClient() as client:
-            base_url = EBX_ESL_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
+            base_url = EBX_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
             branch_name = f"B{dataspace}" if not dataspace.startswith("B") else dataspace
             
+            # 1. Use a trailing slash to target the dataset root node (not Dataset Info)
+            # 2. Omit pageSize to use the system default and avoid the validation error
+            root_url = f"{base_url}/data/v1/{branch_name}/{dataset}/?includeMetamodel=true"
+            
+            response = await client.get(root_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
+            
+            if not response.is_success:
+                return f"Failed to retrieve dataset metamodel (HTTP {response.status_code}): {response.text}"
+                
+            data = response.json()
+            
+            # The 'meta' block contains the EXHAUSTIVE, nested schema definition
+            meta_fields = data.get("meta", {}).get("fields", [])
+            
+            if not meta_fields:
+                return f"No metamodel fields returned for dataset '{dataset}'. It may be empty."
+                
+            tables_found = []
+            
+            # Recursive function to parse the nested metamodel JSON tree in memory
+            def extract_tables(fields_array, parent_path=""):
+                for field in fields_array:
+                    
+                    # EBX provides the absolute path directly in the metamodel
+                    path = field.get("pathInDataset")
+                    if not path:
+                        path = f"{parent_path}/{field.get('name')}"
+                                            
+                    if field.get("type") == "table":
+                        label = field.get("label", "No label")
+                        tables_found.append(f"| `{path}` | {label} |")
+                    
+                    # If it's a group, recurse into its nested fields
+                    # We skip recursing inside tables because we only want table paths
+                    elif field.get("type") == "group" and "fields" in field:
+                        extract_tables(field.get("fields"), path)
+
+            # Start the extraction process
+            extract_tables(meta_fields)
+            
+            if not tables_found:
+                return f"No tables were found in '{dataset}'. Ensure the model contains elements with maxOccurs > 1."
+                
+            # Format nicely for the Agent's context window
             output = [f"### Tables found in Dataset `{dataset}`"]
             output.append("| Table Path | Label |")
             output.append("| :--- | :--- |")
+            output.extend(tables_found)
             
-            # Queue for Breadth-First Search. We start at the dataset root (empty path).
-            queue = [""] 
-            tables_found = 0
-            
-            while queue:
-                current_path = queue.pop(0)
-                
-                # Fetch the current node's metamodel
-                # Note: We use pageSize=1 because we only care about the schema (meta block), not the data rows
-                node_url = f"{base_url}/data/v1/{branch_name}/{dataset}{current_path}?includeMetamodel=true"
-                
-                response = await client.get(node_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
-                
-                if not response.is_success:
-                    continue # Skip nodes the API user doesn't have permission to read
-                    
-                data = response.json()
-                
-                # The 'meta' block contains the schema definition for the immediate children
-                meta_fields = data.get("meta", {}).get("fields", [])
-                
-                for field in meta_fields:
-                    field_name = field.get("name")
-                    child_path = f"{current_path}/{field_name}"
-                    
-                    # In EBX, a Table is defined as an element with maxOccurs > 1
-                    max_occurs = field.get("maxOccurs", 1)
-                    is_table = max_occurs == "unbounded" or (isinstance(max_occurs, int) and max_occurs > 1)
-                    
-                    if is_table:
-                        label = field.get("label", "No label")
-                        output.append(f"| `{child_path}` | {label} |")
-                        tables_found += 1
-                    else:
-                        # If it's not a table, it could be a group.
-                        # Simple fields have a 'type' (e.g., 'string', 'int'). 
-                        # Groups usually omit the 'type' property.
-                        if "type" not in field:
-                            # Queue this group to inspect its children in the next loop
-                            queue.append(child_path)
-
-            if tables_found == 0:
-                return f"No tables were found in '{dataset}'. The dataset may be empty, or you lack permissions."
-                
             return "\n".join(output)
 
     except Exception as e:
