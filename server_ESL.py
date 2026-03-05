@@ -7,7 +7,8 @@ mcp = FastMCP("EBX_SQL_Gateway")
 
 # 2. Configuration (Replace with your actual EBX details)
 EBX_HOST = "http://localhost:8081"
-EBX_REST_URL = EBX_HOST + "/ebx-dataservices/script/SqlExecutor/execute"
+EBX_ESL_REST_URL = EBX_HOST + "/ebx-dataservices/script/SqlExecutor/execute"
+EBX_DATASERVICES_REST_URL = EBX_HOST + "/ebx-dataservices/rest/data/v1"
 EBX_USER = "admin"
 EBX_PASS = "admin"
 
@@ -15,7 +16,7 @@ EBX_PASS = "admin"
 @mcp.tool()
 async def execute_ebx_sql(sql: str, dataspace: str, dataset: str, expected_columns: list[str]) -> str:
     """
-    Executes a SQL query against the TIBCO EBX Master Data Management system.
+    Executes an Apache Calcite SQL query against the TIBCO EBX Master Data Management system.
     
     CRITICAL RULES FOR EBX SQL:
     1. You must format your SELECT statement to return strings for every column. Wrap standard 
@@ -38,7 +39,7 @@ async def execute_ebx_sql(sql: str, dataspace: str, dataset: str, expected_colum
         # Send the request to your newly created EBX ESL endpoint
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                EBX_REST_URL, 
+                EBX_ESL_REST_URL, 
                 json=payload,
                 auth=(EBX_USER, EBX_PASS), # Use Basic Auth or adjust for token auth
                 timeout=30.0
@@ -64,17 +65,25 @@ async def introspect_ebx_schema(dataspace: str, dataset: str, table_path: str = 
     Args:
         dataspace: The exact EBX dataspace name (e.g., 'BtoCCustomers').
         dataset: The exact EBX dataset name (e.g., 'BtoCCustomers').
-        table_path: (Optional) A specific table to inspect (e.g., 'Person'). If omitted, returns all tables.
+        table_path: (Optional) A specific table path to inspect (e.g., '/root/Person'). If omitted, returns all tables.
     """
     # EBX built-in REST URLs require dataspaces to be prefixed with 'B' (Branch)
     branch_name = f"B{dataspace}"
     
-    # Construct the built-in EBX OpenAPI endpoint
-    # Format: /rest/{category}/{categoryVersion}/{specificPath}
-    openapi_url = f"{EBX_HOST}/ebx-dataservices/rest/open-api/v1/data/{branch_name}/{dataset}"
+    # Normalize table_path: strip leading slash, then ensure it starts with 'root/'
+    # Accepts: 'Person', '/Person', 'root/Person', '/root/Person', '/root/Person/subnode'
+    if table_path:
+        path_suffix = table_path.lstrip("/")
+        if not path_suffix.startswith("root/"):
+            path_suffix = f"root/{path_suffix}"
+    else:
+        path_suffix = ""
+    openapi_url = f"{EBX_HOST}/ebx-dataservices/rest/api/v1/data/v1/{branch_name}/{dataset}"
+    if path_suffix:
+        openapi_url = f"{openapi_url}/{path_suffix}"
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(
                 openapi_url,
                 auth=(EBX_USER, EBX_PASS),
@@ -82,24 +91,38 @@ async def introspect_ebx_schema(dataspace: str, dataset: str, table_path: str = 
             )
             
             if not response.is_success:
-                return f"Schema introspection failed (HTTP {response.status_code}): {response.text}"
+                location = response.headers.get("location", "")
+                hint = f" → redirected to: {location}" if location else ""
+                return f"Schema introspection failed (HTTP {response.status_code}){hint}: {response.text}"
                 
             openapi_spec = response.json()
             
-            # Extract just the schema definitions from the massive OpenAPI spec
+            # Extract schema definitions from the OpenAPI spec
             schemas = openapi_spec.get("components", {}).get("schemas", {})
             
+            # Known EBX REST infrastructure schemas — never actual table data
+            EBX_META_SCHEMAS = {"Message", "Count", "Pagination", "ErrorItem", "Link", "Sort", "Order"}
+
+            def collect_properties(schema_details):
+                """Collect all properties from a schema, merging allOf sub-schemas."""
+                props = dict(schema_details.get("properties", {}))
+                for sub in schema_details.get("allOf", []):
+                    if "$ref" in sub:
+                        ref_name = sub["$ref"].split("/")[-1]
+                        props.update(schemas.get(ref_name, {}).get("properties", {}))
+                    else:
+                        props.update(sub.get("properties", {}))
+                return props
+
             output = []
             for schema_name, schema_details in schemas.items():
-                # Filter out REST-specific metadata wrappers (like sort arrays or pagination)
+                # Skip EBX REST infrastructure wrappers and operation envelope schemas
+                if schema_name in EBX_META_SCHEMAS:
+                    continue
                 if "Request" in schema_name or "Response" in schema_name:
                     continue
                     
-                # If the AI asked for a specific table, filter for it
-                if table_path and table_path.lower() not in schema_name.lower():
-                    continue
-                    
-                properties = schema_details.get("properties", {})
+                properties = collect_properties(schema_details)
                 if not properties:
                     continue
                     
@@ -117,7 +140,7 @@ async def introspect_ebx_schema(dataspace: str, dataset: str, table_path: str = 
                 output.append("")
                 
             if not output:
-                return f"No tables found matching '{table_path}' in dataset '{dataset}'."
+                return f"No schema definitions found in dataset '{dataset}'" + (f" at path '{table_path}'." if table_path else ".")
                 
             return "\n".join(output)
             
@@ -140,7 +163,7 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
             
             # --- FIX 1: Bulletproof URL Parsing ---
             # Splits at '/rest' and reconstructs to guarantee 'http://.../ebx-dataservices/rest'
-            base_url = EBX_REST_URL.split('/rest')[0] + '/rest'
+            base_url = EBX_DATASERVICES_REST_URL.split('/rest')[0] + '/rest'
             
             # --- PATH 1: FIND ALL DATASPACES (Recursive Tree Traversal) ---
             if not dataspace_name:
@@ -231,4 +254,4 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
         
 # 4. Run the server
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="http", host="0.0.0.0", port=8001)
