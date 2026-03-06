@@ -9,8 +9,50 @@ mcp = FastMCP("EBX_SQL_Gateway")
 EBX_HOST = "http://localhost:8081"
 EBX_ESL_REST_URL = EBX_HOST + "/ebx-dataservices/script/SqlExecutor/execute"
 EBX_DATASERVICES_REST_URL = EBX_HOST + "/ebx-dataservices/rest/data/v1"
-EBX_USER = "admin"
-EBX_PASS = "admin"
+
+# Global state to hold the token while Claude Desktop is running
+EBX_SESSION = {
+    "tokenType": None,
+    "accessToken": None
+}
+
+def get_auth_headers():
+    """Generates the EBX Token Authorization header if logged in."""
+    if EBX_SESSION["accessToken"]:
+        return {"Authorization": f"{EBX_SESSION['tokenType']} {EBX_SESSION['accessToken']}"}
+    return None
+
+@mcp.tool()
+async def login_to_ebx(username: str, password: str) -> str:
+    """
+    Authenticates the user with TIBCO EBX to get a session token.
+    Call this tool immediately when the user provides their username and password.
+    """
+    # The EBX native auth endpoint
+    auth_url = f"{EBX_HOST}/ebx-dataservices/rest/auth/v1/token:create"
+    
+    payload = {
+        "login": username,
+        "password": password
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(auth_url, json=payload, timeout=10.0)
+            
+            if response.is_success:
+                data = response.json()
+                
+                # EBX returns accessToken and tokenType (usually 'Token')
+                EBX_SESSION["accessToken"] = data.get("accessToken")
+                EBX_SESSION["tokenType"] = data.get("tokenType", "Token")
+                
+                return f"Successfully logged in as {username}. You may now query the database."
+            else:
+                return f"Login failed (HTTP {response.status_code}). Tell the user their credentials were rejected."
+                
+    except Exception as e:
+        return f"Network error during login: {str(e)}"
 
 @mcp.tool()
 async def search_ebx_repository(dataspace_name: str = None) -> str:
@@ -20,6 +62,11 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
     - If dataspace_name is provided, recursively traverses and returns all Datasets inside it.
     NEVER guess dataspace or dataset names. Always use this tool first to find them.
     """
+    # 1. Enforce Authentication
+    headers = get_auth_headers()
+    if not headers:
+        return "HTTP 401 Unauthorized: You are not logged in. Stop what you are doing, ask the user for their EBX username and password, and use the login_to_ebx tool."
+
     try:
         async with httpx.AsyncClient() as client:
             output = []
@@ -36,8 +83,11 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
                     current_url = queue.pop(0)
                     
                     while current_url:
-                        response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
-                        
+                        response = await client.get(
+                            current_url, 
+                            headers=headers,
+                            timeout=30.0
+                        )                        
                         if not response.is_success:
                             return f"Repository search failed on {current_url} (HTTP {response.status_code}): {response.text}"
                             
@@ -86,7 +136,11 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
                     current_url = queue.pop(0)
                     
                     while current_url:
-                        response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
+                        response = await client.get(
+                            current_url, 
+                            headers=headers,
+                            timeout=30.0
+                        )                        
                         if not response.is_success:
                             return f"Failed to list datasets in {dataspace_name} (HTTP {response.status_code}): {response.text}"
                             
@@ -130,6 +184,10 @@ async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
     Use this ONLY after finding the dataspace and dataset using search_ebx_repository.
     This returns the exact `table_path` you need for the inspect_table tool.
     """
+    headers = get_auth_headers()
+    if not headers:
+        return "HTTP 401 Unauthorized: You are not logged in. Stop what you are doing, ask the user for their EBX username and password, and use the login_to_ebx tool."
+
     try:
         async with httpx.AsyncClient() as client:
             base_url = EBX_ESL_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
@@ -137,7 +195,7 @@ async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
             
             root_url = f"{base_url}/data/v1/{branch_name}/{dataset}?includeMetamodel=true"
             
-            response = await client.get(root_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
+            response = await client.get(root_url, headers=headers, timeout=30.0)
             
             if not response.is_success:
                 return f"Failed to retrieve dataset metamodel (HTTP {response.status_code}): {response.text}"
@@ -187,6 +245,10 @@ async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
     If a field is not a 'string', you must remember to CAST it to VARCHAR in your SQL query.
     If a field is a Foreign Key, you must use FK_AS_STRING().
     """
+    headers = get_auth_headers()
+    if not headers:
+        return "HTTP 401 Unauthorized: You are not logged in. Stop what you are doing, ask the user for their EBX username and password, and use the login_to_ebx tool."
+
     try:
         async with httpx.AsyncClient() as client:
             base_url = EBX_ESL_REST_URL.split('/ebx-dataservices')[0] + '/ebx-dataservices/rest'
@@ -195,7 +257,7 @@ async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
             
             current_url = f"{base_url}/data/v1/{branch_name}/{dataset}/{clean_path}?includeMetamodel=true"
             
-            response = await client.get(current_url, auth=(EBX_USER, EBX_PASS), timeout=30.0)
+            response = await client.get(current_url, headers=headers, timeout=30.0)
             
             if not response.is_success:
                 return f"Failed to introspect table (HTTP {response.status_code}): {response.text}"
@@ -279,6 +341,10 @@ async def execute_ebx_sql(sql: str, dataspace: str, dataset: str, expected_colum
         FK_AS_STRING(c.household) AS household_id 
     FROM "/root/Person" c
     """
+    headers = get_auth_headers()
+    if not headers:
+        return "HTTP 401 Unauthorized: You are not logged in. Stop what you are doing, ask the user for their EBX username and password, and use the login_to_ebx tool."
+
     payload = {
         "sql": sql,
         "dataspace": dataspace,
@@ -291,7 +357,7 @@ async def execute_ebx_sql(sql: str, dataspace: str, dataset: str, expected_colum
             response = await client.post(
                 EBX_ESL_REST_URL, 
                 json=payload,
-                auth=(EBX_USER, EBX_PASS),
+                headers=headers,
                 timeout=30.0
             )
             
