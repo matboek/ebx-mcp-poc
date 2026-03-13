@@ -10,23 +10,13 @@ EBX_HOST = "http://localhost:8081"
 EBX_ESL_REST_URL = EBX_HOST + "/ebx-dataservices/script/SqlExecutor/execute"
 EBX_DATASERVICES_REST_URL = EBX_HOST + "/ebx-dataservices/rest/data/v1"
 
-# Global state to hold the token while Claude Desktop is running
-EBX_SESSION = {
-    "tokenType": None,
-    "accessToken": None
-}
-
-def get_auth_headers():
-    """Generates the EBX Token Authorization header if logged in."""
-    if EBX_SESSION["accessToken"]:
-        return {"Authorization": f"{EBX_SESSION['tokenType']} {EBX_SESSION['accessToken']}"}
-    return None
 
 @mcp.tool()
 async def login_to_ebx(username: str, password: str) -> str:
     """
-    Authenticates the user with TIBCO EBX to get a session token.
+    Authenticates the user with TIBCO EBX and returns an auth_token string.
     Call this tool immediately when the user provides their username and password.
+    Store the returned token and pass it as `auth_token` to all other tools.
     """
     # The EBX native auth endpoint
     auth_url = f"{EBX_HOST}/ebx-dataservices/rest/auth/v1/token:create"
@@ -43,11 +33,9 @@ async def login_to_ebx(username: str, password: str) -> str:
             if response.is_success:
                 data = response.json()
                 
-                # EBX returns accessToken and tokenType (usually 'Token')
-                EBX_SESSION["accessToken"] = data.get("accessToken")
-                EBX_SESSION["tokenType"] = data.get("tokenType", "Token")
-                
-                return f"Successfully logged in as {username}. You may now query the database."
+                token_type = data.get("tokenType", "Token")
+                access_token = data.get("accessToken")
+                return f"{token_type} {access_token}"
             else:
                 return f"Login failed (HTTP {response.status_code}). Tell the user their credentials were rejected."
                 
@@ -55,17 +43,15 @@ async def login_to_ebx(username: str, password: str) -> str:
         return f"Network error during login: {str(e)}"
 
 @mcp.tool()
-async def search_ebx_repository(dataspace_name: str = None) -> str:
+async def search_ebx_repository(auth_token: str, dataspace_name: str = None) -> str:
     """
     Searches the EBX repository to discover available dataspaces and datasets.
     - If dataspace_name is omitted, recursively traverses and returns all OPEN Dataspaces.
     - If dataspace_name is provided, recursively traverses and returns all Datasets inside it.
     NEVER guess dataspace or dataset names. Always use this tool first to find them.
+    Requires `auth_token` returned by login_to_ebx.
     """
-    # 1. Enforce Authentication
-    headers = get_auth_headers()
-    if not headers:
-        return "HTTP 401 Unauthorized: You are not logged in. Stop what you are doing, ask the user for their EBX username and password, and use the login_to_ebx tool."
+    headers = {"Authorization": auth_token}
 
     try:
         async with httpx.AsyncClient() as client:
@@ -178,15 +164,14 @@ async def search_ebx_repository(dataspace_name: str = None) -> str:
         return f"Network error during repository search: {str(e)}"
 
 @mcp.tool()
-async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
+async def list_tables_in_dataset(auth_token: str, dataspace: str, dataset: str) -> str:
     """
     Crawls an EBX dataset schema to find all valid tables.
     Use this ONLY after finding the dataspace and dataset using search_ebx_repository.
     This returns the exact `table_path` you need for the inspect_table tool.
+    Requires `auth_token` returned by login_to_ebx.
     """
-    headers = get_auth_headers()
-    if not headers:
-        return "HTTP 401 Unauthorized: You are not logged in. Stop what you are doing, ask the user for their EBX username and password, and use the login_to_ebx tool."
+    headers = {"Authorization": auth_token}
 
     try:
         async with httpx.AsyncClient() as client:
@@ -236,18 +221,17 @@ async def list_tables_in_dataset(dataspace: str, dataset: str) -> str:
         return f"Network error during dataset crawling: {str(e)}"
 
 @mcp.tool()
-async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
+async def inspect_table(auth_token: str, dataspace: str, dataset: str, table_path: str) -> str:
     """
     Get the exact table definition, column names, and data types required to write a SQL query.
     Requires the dataspace, dataset, and table_path found via the previous tools.
+    Requires `auth_token` returned by login_to_ebx.
     
     PAY CLOSE ATTENTION TO THE RETURNED TYPES: 
     If a field is not a 'string', you must remember to CAST it to VARCHAR in your SQL query.
     If a field is a Foreign Key, you must use FK_AS_STRING().
     """
-    headers = get_auth_headers()
-    if not headers:
-        return "HTTP 401 Unauthorized: You are not logged in. Stop what you are doing, ask the user for their EBX username and password, and use the login_to_ebx tool."
+    headers = {"Authorization": auth_token}
 
     try:
         async with httpx.AsyncClient() as client:
@@ -315,9 +299,10 @@ async def inspect_table(dataspace: str, dataset: str, table_path: str) -> str:
         return f"Network error during table introspection: {str(e)}"
 
 @mcp.tool()
-async def execute_ebx_sql(sql: str, dataspace: str, dataset: str, expected_columns: list[str]) -> str:
+async def execute_ebx_sql(auth_token: str, sql: str, dataspace: str, dataset: str, expected_columns: list[str]) -> str:
     """
     Executes an Apache Calcite SQL query against the TIBCO EBX system.
+    Requires `auth_token` returned by login_to_ebx.
     
     CRITICAL WARNING: The EBX API masks syntax errors. If your SQL is invalid, you will receive 
     a generic HTTP 500 error with NO debugging details. You MUST follow these rules exactly:
@@ -341,9 +326,7 @@ async def execute_ebx_sql(sql: str, dataspace: str, dataset: str, expected_colum
         FK_AS_STRING(c.household) AS household_id 
     FROM "/root/Person" c
     """
-    headers = get_auth_headers()
-    if not headers:
-        return "HTTP 401 Unauthorized: You are not logged in. Stop what you are doing, ask the user for their EBX username and password, and use the login_to_ebx tool."
+    headers = {"Authorization": auth_token}
 
     payload = {
         "sql": sql,
