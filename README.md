@@ -1,9 +1,6 @@
 # EBX SQL Gateway MCP Server
 
 This MCP server exposes TIBCO EBX natively as tools via token-based authentication. It is built with [FastMCP](https://github.com/jlowin/fastmcp) and served over HTTP via uvicorn.
-# EBX SQL Gateway MCP Server
-
-This MCP server exposes TIBCO EBX natively as tools via token-based authentication. It is built with [FastMCP](https://github.com/jlowin/fastmcp) and served over HTTP via uvicorn.
 
 Unlike the Agent API server (`server.py`), this server talks directly to the EBX Dataservices REST API and an ESL script endpoint, giving you full control without a middleware layer.
 Unlike the Agent API server (`server.py`), this server talks directly to the EBX Dataservices REST API and an ESL script endpoint, giving you full control without a middleware layer.
