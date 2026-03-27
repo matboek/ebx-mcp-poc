@@ -352,6 +352,78 @@ async def execute_ebx_sql(auth_token: str, sql: str, dataspace: str, dataset: st
     except Exception as e:
         return f"Network or connection error communicating with EBX: {str(e)}"
 
+import httpx
+import json
+import urllib.parse
+
+@mcp.tool()
+async def query_ebx_table(auth_token: str, dataspace: str, dataset: str, table_path: str, filter_xpath: str = None, limit: int = 50) -> str:
+    """
+    Queries a TIBCO EBX table to retrieve data records using the OOTB REST API.
+    Requires `auth_token` returned by login_to_ebx.
+    
+    CRITICAL WARNING: DO NOT USE SQL. You must use TIBCO EBX XPath predicate syntax for the `filter_xpath`.
+    
+    EBX XPATH PREDICATE RULES:
+    1. RELATIVE PATHS: Every field reference MUST start with `./` to indicate a path relative to the current record. 
+       Example: `./lastName` or `./Address/city`
+    2. STRING LITERALS: All string values MUST be enclosed in single quotes.
+       Example: `./status='ACTIVE'`
+    3. NUMBERS & BOOLEANS: Do not use quotes for numbers or booleans (true/false).
+       Example: `./age >= 18 and ./isActive = true`
+    4. LOGICAL OPERATORS: Use `and`, `or`, and `not()`. (Do NOT use && or ||).
+    5. COMPARISON OPERATORS: `=`, `!=`, `<`, `<=`, `>`, `>=`.
+    6. TEXT SEARCHING (IMPORTANT): Do NOT use SQL `LIKE`. For partial or case-insensitive text matching, 
+       you MUST use the native EBX search functions:
+       - `osd:search(./field, 'searchTerm')` (Full-text search)
+       - `contains(./field, 'substring')`
+       - `starts-with(./field, 'prefix')`
+       - `ends-with(./field, 'suffix')`
+    7. NULL CHECKS: Use `osd:is-null(./field)` or `osd:is-not-null(./field)`. (Do NOT use `!= null`).
+    
+    EXAMPLE VALID FILTERS:
+    - `./lastName='Smith' and ./age>25`
+    - `osd:search(./Company/name, 'Tech') and osd:is-not-null(./Company/taxId)`
+    - `starts-with(./firstName, 'J') or ./status='PENDING'`
+    """
+    headers = {"Authorization": auth_token}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            # Ensure the base URL is clean
+            base_url = EBX_DATASERVICES_REST_URL.split('/rest')[0] + '/rest'
+            branch_name = f"B{dataspace}" if not dataspace.startswith("B") else dataspace
+            clean_path = table_path[1:] if table_path.startswith('/') else table_path
+            
+            target_url = f"{base_url}/data/v1/{branch_name}/{dataset}/{clean_path}"
+            
+            params = {
+                "pageSize": limit,
+                "includeMetamodel": "false" # We only want data, not the schema
+            }
+            
+            if filter_xpath:
+                params["filter"] = filter_xpath
+                
+            response = await client.get(target_url, headers=headers, params=params, timeout=30.0)
+            
+            if not response.is_success:
+                return f"REST Query Failed (HTTP {response.status_code}). Review your EBX XPath syntax against the strict tool rules. Error details: {response.text}"
+                
+            data = response.json()
+            rows = data.get("rows", [])
+            
+            if not rows:
+                return f"The query executed successfully, but 0 records were found matching the XPath: {filter_xpath}"
+                
+            # Strip EBX wrappers and only return the pure data 'content' block to save LLM tokens
+            clean_records = [row.get("content", {}) for row in rows]
+            
+            return json.dumps(clean_records, indent=2)
+
+    except Exception as e:
+        return f"Network error during data query: {str(e)}"
+
 # 4. Run the server
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=8001)
