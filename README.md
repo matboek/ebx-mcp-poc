@@ -1,132 +1,184 @@
-# EBX Agent API MCP Server
+# EBX SQL Gateway MCP Server
 
-This MCP server exposes the EBX Agent API as tools that can be used with GitHub Copilot, Claude Desktop, or any other MCP-compatible client. It is built with [FastMCP](https://github.com/jlowin/fastmcp) and served over HTTP via FastAPI + uvicorn.
+This MCP server exposes TIBCO EBX natively as tools via token-based authentication. It is built with [FastMCP](https://github.com/jlowin/fastmcp) and served over HTTP via uvicorn.
+
+Unlike the Agent API server (`server.py`), this server talks directly to the EBX Dataservices REST API and an ESL script endpoint, giving you full control without a middleware layer.
 
 ## Tools
 
-The server provides three tools:
+The server provides five tools that must be called in order:
 
-### 1. `search_schema`
-Search the EBX schema to discover where data is stored in the repository.
-
-**Parameters:**
-- `query` (required): Search term to match against table names, labels, and descriptions (case-insensitive)
-
-**Returns:** JSON array of matching table locations, each with `dataspace`, `dataset`, `path`, `label`, and `description`.
-
-### 2. `execute_sql`
-Execute a SQL SELECT query against the EBX data repository.
+### 1. `login_to_ebx`
+Authenticates with EBX and returns an `auth_token` string.
 
 **Parameters:**
-- `sql` (required): SQL SELECT query to execute
-- `dataspace` (required): Dataspace name (from `search_schema` results)
-- `dataset` (required): Dataset name (from `search_schema` results)
+- `username` (required): EBX username
+- `password` (required): EBX password
 
-**Returns:** JSON with query results including rows and column metadata.
+**Returns:** Token string (e.g. `"Token abc123…"`). Pass this to every subsequent tool call.
 
-### 3. `get_table_definition`
-Get detailed field information for a specific table in EBX.
+---
+
+### 2. `search_ebx_repository`
+Discovers available dataspaces and datasets.
 
 **Parameters:**
-- `dataspace` (required): Dataspace name (from `search_schema` results)
-- `dataset` (required): Dataset name (from `search_schema` results)
-- `path` (required): Table path like `/root/Customer` (from `search_schema` results)
+- `auth_token` (required): Token from `login_to_ebx`
+- `dataspace_name` (optional): If omitted, returns all open dataspaces. If provided, returns all datasets inside that dataspace.
 
-**Returns:** JSON array of field definitions with `name`, `label`, `type`, and `fk_target`.
+**Returns:** Formatted list of dataspaces or datasets with labels and descriptions.
+
+---
+
+### 3. `list_tables_in_dataset`
+Crawls a dataset's metamodel to find all queryable table paths.
+
+**Parameters:**
+- `auth_token` (required): Token from `login_to_ebx`
+- `dataspace` (required): Dataspace name (from `search_ebx_repository`)
+- `dataset` (required): Dataset name (from `search_ebx_repository`)
+
+**Returns:** Markdown table of table paths and labels.
+
+---
+
+### 4. `inspect_table`
+Returns the exact column names, types, and structure needed to write a SQL query.
+
+**Parameters:**
+- `auth_token` (required): Token from `login_to_ebx`
+- `dataspace` (required): Dataspace name
+- `dataset` (required): Dataset name
+- `table_path` (required): Table path (e.g. `/root/Customer`) from `list_tables_in_dataset`
+
+**Returns:** Markdown table of column names, types, labels, and whether the field is required.
+
+> **Important:** Note the returned type for each field — non-string types must be wrapped in `CAST(… AS VARCHAR)` and foreign keys require `FK_AS_STRING(…)` in SQL.
+
+---
+
+### 5. `execute_ebx_sql`
+Executes an Apache Calcite SQL query against EBX.
+
+**Parameters:**
+- `auth_token` (required): Token from `login_to_ebx`
+- `sql` (required): SQL SELECT query
+- `dataspace` (required): Dataspace name
+- `dataset` (required): Dataset name
+- `expected_columns` (required): List of column aliases that exactly match the `AS` aliases in the SQL
+
+**Returns:** JSON query results.
+
+#### SQL Rules (critical — the API gives no error details on bad SQL)
+
+| Rule | Correct | Incorrect |
+|---|---|---|
+| Table path must be double-quoted with an alias | `FROM "/root/Customer" c` | `FROM /root/Customer` |
+| Every field must be prefixed with the table alias | `c.Address.city` | `Address.city` |
+| Non-string fields must be cast | `CAST(c.age AS VARCHAR) AS age` | `c.age AS age` |
+| Foreign key fields must use native function | `FK_AS_STRING(c.household) AS household_id` | `CAST(c.household AS VARCHAR)` |
+| Every selected column must have an explicit alias | `c.name AS name` | `c.name` |
+| `expected_columns` must exactly match SQL aliases | `["name", "age"]` matching `AS name, AS age` | mismatched names |
+
+**Example query:**
+```sql
+SELECT
+    c.Identification.firstName AS first_name,
+    CAST(c.Metrics.age AS VARCHAR) AS age,
+    FK_AS_STRING(c.household) AS household_id
+FROM "/root/Person" c
+```
 
 ## Setup
 
-1. Create a virtual environment (recommended):
-\`\`\`bash
+1. Create a virtual environment:
+```bash
 python3 -m venv .venv
-source .venv/bin/activate  # On macOS/Linux
+source .venv/bin/activate  # macOS/Linux
 # or
-.venv\Scripts\activate     # On Windows
-\`\`\`
+.venv\Scripts\activate     # Windows
+```
 
 2. Install dependencies:
-\`\`\`bash
+```bash
 pip install -r requirements.txt
-\`\`\`
+```
 
-3. Ensure the EBX Agent API is running at `http://localhost:8080/ebx-ps-fasttrack/rest`
+3. Ensure TIBCO EBX is running at `http://localhost:8081` and that the `SqlExecutor` ESL script is deployed at `/ebx-dataservices/script/SqlExecutor/execute`.
 
 ## Running the Server
 
-\`\`\`bash
-python server.py
-\`\`\`
+```bash
+python server_ESL.py
+```
 
-This starts a FastAPI + uvicorn HTTP server on port 8000. The MCP endpoint is mounted at `/mcp`:
+Starts the server on port **8001**. The MCP endpoint is:
 
-- **MCP endpoint**: `http://localhost:8000/mcp`
+- **MCP endpoint**: `http://localhost:8001/mcp`
 
 ## API Configuration
 
-By default the server connects to:
-- **Base URL**: `http://localhost:8080/ebx-ps-fasttrack/rest`
-- **Auth**: Basic auth with `admin` / `admin`
+Modify these constants at the top of `server_ESL.py` to point at a different environment:
 
-To change these, modify the `BASE_URL` and `AUTH` constants at the top of `server.py`.
+| Constant | Default |
+|---|---|
+| `EBX_HOST` | `http://localhost:8081` |
+| `EBX_ESL_REST_URL` | `{EBX_HOST}/ebx-dataservices/script/SqlExecutor/execute` |
+| `EBX_DATASERVICES_REST_URL` | `{EBX_HOST}/ebx-dataservices/rest/data/v1` |
 
 ## Integration
 
 ### GitHub Copilot (VS Code)
 
-Add the server to your VS Code MCP configuration (`.vscode/mcp.json` or user settings):
+Add to `.vscode/mcp.json`:
 
-\`\`\`json
+```json
 {
   "servers": {
-    "ebx-agent": {
+    "ebx-sql-gateway": {
       "type": "http",
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8001/mcp"
     }
   }
 }
-\`\`\`
+```
 
 ### Claude Desktop
 
-Add to your Claude Desktop config file:
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`  
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-\`\`\`json
+```json
 {
   "mcpServers": {
-    "ebx-agent": {
+    "ebx-sql-gateway": {
       "type": "http",
-      "url": "http://localhost:8000/mcp"
+      "url": "http://localhost:8001/mcp"
     }
   }
 }
-\`\`\`
+```
 
-### Testing with MCP Inspector or curl
+## Recommended Workflow
 
-\`\`\`bash
+Always call tools in this order:
+
+1. `login_to_ebx` — authenticate and get the token
+2. `search_ebx_repository` — find the right dataspace (omit `dataspace_name`)
+3. `search_ebx_repository` — find the right dataset (pass `dataspace_name`)
+4. `list_tables_in_dataset` — find the exact table path
+5. `inspect_table` — confirm exact field names and types before writing SQL
+6. `execute_ebx_sql` — run the query
+
+## Testing with curl
+
+```bash
 # Initialize session
-curl -X POST http://localhost:8000/mcp \
+curl -X POST http://localhost:8001/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
 
 # List available tools
-curl -X POST http://localhost:8000/mcp \
+curl -X POST http://localhost:8001/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":2}'
-
-# Call search_schema
-curl -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"search_schema","arguments":{"query":"customer"}},"id":3}'
-\`\`\`
-
-## Example Usage
-
-Once connected, an AI assistant can use natural language to interact with EBX:
-
-- "Search for tables related to 'customer'"
-- "Get the field definitions for the Employee table in the HR dataspace"
-- "Execute this SQL: SELECT * FROM \"/root/Customer\" LIMIT 10"
+```

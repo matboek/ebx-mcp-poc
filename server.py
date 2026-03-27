@@ -10,7 +10,7 @@ from typing import Optional, List, Dict
 logging.basicConfig(level=logging.DEBUG)
 
 # Base URL for the EBX Agent API
-BASE_URL = "http://localhost:8080/ebx-ps-fasttrack/rest"
+BASE_URL = "http://localhost:8081/ebx-ps-fasttrack/rest"
 
 # Basic authentication credentials
 AUTH = ("admin", "admin")
