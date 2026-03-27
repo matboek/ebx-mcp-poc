@@ -1,7 +1,11 @@
 # EBX SQL Gateway MCP Server
 
 This MCP server exposes TIBCO EBX natively as tools via token-based authentication. It is built with [FastMCP](https://github.com/jlowin/fastmcp) and served over HTTP via uvicorn.
+# EBX SQL Gateway MCP Server
 
+This MCP server exposes TIBCO EBX natively as tools via token-based authentication. It is built with [FastMCP](https://github.com/jlowin/fastmcp) and served over HTTP via uvicorn.
+
+Unlike the Agent API server (`server.py`), this server talks directly to the EBX Dataservices REST API and an ESL script endpoint, giving you full control without a middleware layer.
 Unlike the Agent API server (`server.py`), this server talks directly to the EBX Dataservices REST API and an ESL script endpoint, giving you full control without a middleware layer.
 
 ## Tools
@@ -89,6 +93,40 @@ SELECT
 FROM "/root/Person" c
 ```
 
+## EBX ESL Script Setup (required)
+
+Before running the MCP server, you must import and publish the `AI_SQL_Gateway_ESL.xml` script into your EBX instance. This deploys the `SqlExecutor` REST endpoint that the MCP server calls.
+
+### Step 1 — Open the Script IDE
+
+Log in to EBX as an administrator and navigate to:
+
+**Administration** → **Script IDE**
+
+([Script IDE documentation](https://docs.tibco.com/pub/ebx/6.2.3/doc/html/en/script_ide/user_interface_reference.html))
+
+### Step 2 — Import the script
+
+1. In the Script IDE toolbar, click **Actions** → **Import**.
+2. In the import dialog, select **Choose file** and pick `AI_SQL_Gateway_ESL.xml` from this repository.
+3. Click **Import**. The script `rest/SqlExecutor` (labelled *AI SQL Gateway*) will appear in the script tree.
+
+### Step 3 — Publish the script
+
+1. Select the `rest/SqlExecutor` script in the tree.
+2. Click **Actions** → **Publish** in the toolbar.
+3. Confirm the dialog. EBX will compile and publish the script, making the REST endpoint live.
+
+The endpoint will now be available at:
+
+```
+http://<your-ebx-host>/ebx-dataservices/script/SqlExecutor/execute
+```
+
+> **Note:** If you change the script path (`idePath` in the XML), update `EBX_ESL_REST_URL` in `server_ESL.py` accordingly.
+
+---
+
 ## Setup
 
 1. Create a virtual environment:
@@ -150,9 +188,13 @@ Add to `.vscode/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "ebx-sql-gateway": {
-      "type": "http",
-      "url": "http://localhost:8001/mcp"
+    "ebx-agent-tools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://localhost:8001/mcp"
+      ]
     }
   }
 }
