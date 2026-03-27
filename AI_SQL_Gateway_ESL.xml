@@ -1,0 +1,162 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!--XML content generated for /root/definition of content type=VALUES in dataset ebx-script-source in dataspace ebx-script-source-2 on 2026-03-09T11:27:01.115 by user [admin].-->
+<root>
+    <definition>
+        <idePath>rest/SqlExecutor</idePath>
+        <revisionId>1815076319025153</revisionId>
+        <revisionDate>2026-03-03T11:57:47.798</revisionDate>
+        <revisionUser>admin</revisionUser>
+        <documentation>
+            <localizedDocumentations>
+                <locale>en_US</locale>
+                <label>AI SQL Gateway</label>
+            </localizedDocumentations>
+            <localizedDocumentations>
+                <locale>fr_FR</locale>
+            </localizedDocumentations>
+        </documentation>
+        <type>restService</type>
+        <source>// 1. Import required units for database, REST, and list operations
+uses core.rest as rest;    // For constructing the JSON response
+uses core.data as data;    // For executing SQL queries
+uses core.list as list;    // For managing the response lists
+uses core.string as str;   // For string conversions
+
+// 2. Define the exported function (must match your Operation ID)
+export function executeSql(requestBody: SqlQueryRequest): rest_response
+begin
+    // Use the fixed string check logic
+    var sqlLower := str.toLowerCase(requestBody.sql);
+
+    if (str.contains(sqlLower, 'delete') or str.contains(sqlLower, 'update')) then
+        return rest.emptyResponse(403);
+
+    var ds := data.findDataspace(requestBody.dataspace);
+    var dt := data.findDataset(ds, requestBody.dataset);
+    
+    // 4. Build and execute the query
+    var q := data.createQuery(requestBody.sql);
+    data.addDataset(q, 'm', dt);
+    var queryResult := data.executeQuery(q);
+    
+    // 5. Build the strictly typed response
+    var responseRows := list.of&lt;Row>();
+
+    for tuple in queryResult do
+    begin
+        var row := instanceOf&lt;Row>();
+        var rowCols := list.of&lt;Column>();
+
+        // Iterate through dynamic column names returned by the query
+        for colName in requestBody.expected_columns do
+        begin
+            var col := instanceOf&lt;Column>();
+            col.name := colName;
+            // Convert all values to string for the standardized envelope
+            col.value := data.field&lt;string>(tuple, colName); 
+            list.add(rowCols, col);
+        end;
+
+        row.columns  := rowCols;
+        list.add(responseRows, row);
+    end;
+
+    // 6. Wrap in the final response object
+    var finalResult := instanceOf&lt;QueryResponse>();
+    finalResult.rows := responseRows;
+
+    return rest.responseOf(200, finalResult); //
+end
+</source>
+        <openApi>{
+	"paths": {
+		"/execute": {
+			"parameters": [],
+			"post": {
+				"operationId": "executeSql",
+				"parameters": [],
+				"responses": {
+					"200": {
+						"description": "",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/QueryResponse"
+								}
+							}
+						}
+					}
+				},
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SqlQueryRequest"
+							}
+						}
+					},
+					"required": true
+				}
+			}
+		}
+	},
+	"components": {
+		"schemas": {
+			"Column": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"value": {
+						"type": "string"
+					}
+				}
+			},
+			"Row": {
+				"type": "object",
+				"properties": {
+					"columns": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Column"
+						}
+					}
+				}
+			},
+			"QueryResponse": {
+				"type": "object",
+				"properties": {
+					"rows": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Row"
+						}
+					}
+				}
+			},
+			"SqlQueryRequest": {
+				"type": "object",
+				"properties": {
+					"sql": {
+						"type": "string"
+					},
+					"dataspace": {
+						"type": "string"
+					},
+					"dataset": {
+						"type": "string"
+					},
+					"expected_columns": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					}
+				}
+			}
+		}
+	}
+}</openApi>
+    </definition>
+</root>
