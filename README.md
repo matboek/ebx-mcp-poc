@@ -219,8 +219,8 @@ OpenWebUI can use this MCP server as an external tool provider. These steps assu
 1. Go to **Workspace** → **Models** and create a new model backed by your chosen base model.
 2. **System prompt** — paste in a system prompt that instructs the model to use EBX tools correctly. The files `System_Prompt_ESL` and `System_Prompt_XPath` in this repository are ready-made starting points.
 3. **Advanced params** → set **Function Calling** to **Native**.
-4. **Tools** → tick the checkbox next to the MCP server entry you registered in Step 0.
-5. Save the model. You can now chat with it and it will invoke the EBX MCP tools automatically.
+4. **Tools** → tick the checkbox next to the MCP server entry you registered in Step 1.
+5. Save the model and ensure it is enabled via the toggle. You can now chat with it and it will invoke the EBX MCP tools automatically.
 
 ---
 
