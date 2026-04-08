@@ -197,6 +197,33 @@ Add to `.vscode/mcp.json`:
 }
 ```
 
+### OpenWebUI
+
+OpenWebUI can use this MCP server as an external tool provider. These steps assume you already have a model configured (e.g. via Ollama). A moderately powerful model capable of agentic/function-calling behaviour is required — for example `gpt-oss:20b` or equivalent.
+
+#### Step 1 — Register the MCP server as an External Tool
+
+1. Open the **Admin Panel** → **Settings** → **External Tools**.
+2. Click **+** to add a new entry.
+3. Set the **URL** to point at the MCP server.  
+   E.g. If OpenWebUI runs in Docker and the MCP server runs on the host, use:
+   ```
+   http://host.docker.internal:8001/mcp
+   ```
+4. Fill in **ID**, **Name**, and **Description** (free-form, used for display only).
+5. In the **Function Name Filter List** field, type a single comma (`,`). This is a workaround for a current bug that prevents all tools from being exposed if the field is left empty.
+6. Toggle **Enable** and click **Check Connection** to verify the server is reachable.
+
+#### Step 2 — Create a model in the OpenWebUI workspace
+
+1. Go to **Workspace** → **Models** and create a new model backed by your chosen base model.
+2. **System prompt** — paste in a system prompt that instructs the model to use EBX tools correctly. The files `System_Prompt_ESL` and `System_Prompt_XPath` in this repository are ready-made starting points.
+3. **Advanced params** → set **Function Calling** to **Native**.
+4. **Tools** → tick the checkbox next to the MCP server entry you registered in Step 0.
+5. Save the model. You can now chat with it and it will invoke the EBX MCP tools automatically.
+
+---
+
 ## Recommended Workflow
 
 Always call tools in this order:
